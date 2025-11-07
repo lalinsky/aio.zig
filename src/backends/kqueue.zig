@@ -447,20 +447,44 @@ pub const AsyncImpl = struct {
         // Use a unique identifier for the user event
         const ident: usize = @intFromPtr(self);
 
+        // Diagnostic logging for constant values
+        log.debug("=== KQUEUE CONSTANTS DIAGNOSTIC ===", .{});
+        log.debug("EVFILT.USER = {d} (0x{x})", .{ @as(i16, @bitCast(c.EVFILT.USER)), @as(u16, @bitCast(c.EVFILT.USER)) });
+        log.debug("EV.ADD = {d} (0x{x})", .{ c.EV.ADD, c.EV.ADD });
+        log.debug("EV.ENABLE = {d} (0x{x})", .{ c.EV.ENABLE, c.EV.ENABLE });
+        log.debug("EV.CLEAR = {d} (0x{x})", .{ c.EV.CLEAR, c.EV.CLEAR });
+        log.debug("EV.DELETE = {d} (0x{x})", .{ c.EV.DELETE, c.EV.DELETE });
+        log.debug("NOTE.TRIGGER = {d} (0x{x})", .{ c.NOTE.TRIGGER, c.NOTE.TRIGGER });
+        log.debug("sizeof(Kevent) = {d}", .{@sizeOf(c.Kevent)});
+        log.debug("Kevent.ident offset = {d}", .{@offsetOf(c.Kevent, "ident")});
+        log.debug("Kevent.filter offset = {d}", .{@offsetOf(c.Kevent, "filter")});
+        log.debug("Kevent.flags offset = {d}", .{@offsetOf(c.Kevent, "flags")});
+        log.debug("Kevent.fflags offset = {d}", .{@offsetOf(c.Kevent, "fflags")});
+        log.debug("Kevent.data offset = {d}", .{@offsetOf(c.Kevent, "data")});
+        log.debug("Kevent.udata offset = {d}", .{@offsetOf(c.Kevent, "udata")});
+        log.debug("===================================", .{});
+
         // Register EVFILT_USER with kqueue
         var changes: [1]c.Kevent = undefined;
+        const flags = c.EV.ADD | c.EV.ENABLE | c.EV.CLEAR;
         changes[0] = .{
             .ident = ident,
             .filter = c.EVFILT.USER,
-            .flags = c.EV.ADD | c.EV.ENABLE | c.EV.CLEAR,
+            .flags = flags,
             .fflags = 0,
             .data = 0,
             .udata = 0,
         };
+        log.debug("Registering EVFILT_USER: ident={d}, filter={d}, flags={d} (0x{x})", .{ ident, @as(i16, @bitCast(c.EVFILT.USER)), flags, flags });
         const rc = c.kevent(kqueue_fd, &changes, 1, &.{}, 0, null);
-        switch (posix.errno(rc)) {
+        const err = posix.errno(rc);
+        log.debug("kevent() returned: rc={d}, errno={}", .{ rc, err });
+        switch (err) {
             .SUCCESS => {},
-            else => |err| return posix.unexpectedErrno(err),
+            else => |e| {
+                log.err("kevent() failed with errno {d}: {}", .{ @intFromEnum(e), e });
+                return posix.unexpectedErrno(e);
+            },
         }
 
         self.* = .{

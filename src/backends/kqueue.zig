@@ -43,6 +43,7 @@ const EV_ERROR: u16 = 0x4000;
 const EV_EOF: u16 = 0x8000;
 
 // std.c has wrong numbers for EVFILT_USER and NOTE_TRIGGER on NetBSD
+// https://github.com/ziglang/zig/pull/25853
 const EVFILT_USER: i16 = switch (builtin.target.os.tag) {
     .netbsd => 8,
     else => std.c.EVFILT.USER,
@@ -452,16 +453,14 @@ pub const AsyncImpl = struct {
     ident: usize,
 
     pub fn init(self: *AsyncImpl, kqueue_fd: i32) !void {
-        var changes: [1]c.Kevent = .{
-            .{
-                .ident = ntFromPtr(self),
-                .filter = EVFILT_USER,
-                .flags = c.EV.ADD | c.EV.ENABLE | c.EV.CLEAR,
-                .fflags = 0,
-                .data = 0,
-                .udata = 0,
-            },
-        };
+        var changes: [1]c.Kevent = .{.{
+            .ident = @intFromPtr(self),
+            .filter = EVFILT_USER,
+            .flags = c.EV.ADD | c.EV.ENABLE | c.EV.CLEAR,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        }};
         const rc = c.kevent(kqueue_fd, &changes, 1, &.{}, 0, null);
         switch (posix.errno(rc)) {
             .SUCCESS => {},

@@ -36,7 +36,9 @@ const log = std.log.scoped(.zio_kqueue);
 
 const c = std.c;
 
-// EV_EOF is not defined in std.c for FreeBSD, but the flag value is standard
+// These are not not defined in std.c for FreeBSD/NetBSD,
+// but the values are the same across all systems using kqueue
+const EV_ERROR: u16 = 0x4000;
 const EV_EOF: u16 = 0x8000;
 
 allocator: std.mem.Allocator,
@@ -349,7 +351,7 @@ pub fn startCompletion(self: *Self, comp: *Completion) !enum { completed, runnin
 const CheckResult = enum { completed, requeue };
 
 fn handleKqueueError(event: *const c.Kevent, comptime errnoToError: fn (i32) anyerror) ?anyerror {
-    const has_error = (event.flags & c.EV.ERROR) != 0;
+    const has_error = (event.flags & EV_ERROR) != 0;
     const has_eof = (event.flags & EV_EOF) != 0;
     if (!has_error and !has_eof) return null;
 

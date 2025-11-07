@@ -36,10 +36,14 @@ const log = std.log.scoped(.zio_kqueue);
 
 const c = std.c;
 
-// These are not not defined in std.c for FreeBSD/NetBSD,
+// These are not defined in std.c for FreeBSD/NetBSD,
 // but the values are the same across all systems using kqueue
 const EV_ERROR: u16 = 0x4000;
 const EV_EOF: u16 = 0x8000;
+
+// std.c has the wrong value for NOTE_TRIGGER (0x08000000 instead of 0x01000000)
+// Define the correct value for BSD systems
+const NOTE_TRIGGER: u32 = 0x01000000;
 
 allocator: std.mem.Allocator,
 kqueue_fd: i32 = -1,
@@ -456,7 +460,8 @@ pub const AsyncImpl = struct {
         log.debug("EV.ENABLE = {d} (0x{x})", .{ c.EV.ENABLE, c.EV.ENABLE });
         log.debug("EV.CLEAR = {d} (0x{x})", .{ c.EV.CLEAR, c.EV.CLEAR });
         log.debug("EV.DELETE = {d} (0x{x})", .{ c.EV.DELETE, c.EV.DELETE });
-        log.debug("NOTE.TRIGGER = {d} (0x{x})", .{ c.NOTE.TRIGGER, c.NOTE.TRIGGER });
+        log.debug("NOTE.TRIGGER (std.c) = {d} (0x{x})", .{ c.NOTE.TRIGGER, c.NOTE.TRIGGER });
+        log.debug("NOTE.TRIGGER (correct) = {d} (0x{x})", .{ NOTE_TRIGGER, NOTE_TRIGGER });
         log.debug("sizeof(Kevent) = {d}", .{@sizeOf(c.Kevent)});
         log.debug("Kevent.ident offset = {d}", .{@offsetOf(c.Kevent, "ident")});
         log.debug("Kevent.filter offset = {d}", .{@offsetOf(c.Kevent, "filter")});
@@ -516,7 +521,7 @@ pub const AsyncImpl = struct {
             .ident = self.ident,
             .filter = c.EVFILT.USER,
             .flags = 0,
-            .fflags = c.NOTE.TRIGGER,
+            .fflags = NOTE_TRIGGER,
             .data = 0,
             .udata = 0,
         };

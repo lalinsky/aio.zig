@@ -449,7 +449,9 @@ pub const AsyncImpl = struct {
 
         // Diagnostic logging for constant values
         log.debug("=== KQUEUE CONSTANTS DIAGNOSTIC ===", .{});
-        log.debug("EVFILT.USER = {d} (0x{x})", .{ @as(i16, @bitCast(c.EVFILT.USER)), @as(u16, @bitCast(c.EVFILT.USER)) });
+        const evfilt_user_i16: i16 = @intCast(c.EVFILT.USER);
+        const evfilt_user_u16: u16 = @bitCast(evfilt_user_i16);
+        log.debug("EVFILT.USER = {d} (0x{x})", .{ evfilt_user_i16, evfilt_user_u16 });
         log.debug("EV.ADD = {d} (0x{x})", .{ c.EV.ADD, c.EV.ADD });
         log.debug("EV.ENABLE = {d} (0x{x})", .{ c.EV.ENABLE, c.EV.ENABLE });
         log.debug("EV.CLEAR = {d} (0x{x})", .{ c.EV.CLEAR, c.EV.CLEAR });
@@ -475,7 +477,7 @@ pub const AsyncImpl = struct {
             .data = 0,
             .udata = 0,
         };
-        log.debug("Registering EVFILT_USER: ident={d}, filter={d}, flags={d} (0x{x})", .{ ident, @as(i16, @bitCast(c.EVFILT.USER)), flags, flags });
+        log.debug("Registering EVFILT_USER: ident={d}, filter={d}, flags={d} (0x{x})", .{ ident, evfilt_user_i16, flags, flags });
         const rc = c.kevent(kqueue_fd, &changes, 1, &.{}, 0, null);
         const err = posix.errno(rc);
         log.debug("kevent() returned: rc={d}, errno={}", .{ rc, err });

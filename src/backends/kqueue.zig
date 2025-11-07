@@ -42,9 +42,17 @@ const EV_ERROR: u16 = 0x4000;
 const EV_EOF: u16 = 0x8000;
 
 // std.c has incorrect values for BSD kqueue constants
-// EVFILT_USER: std.c has 1, but BSD uses 8
+// EVFILT_USER values are platform-specific:
+// - NetBSD: 8 (positive, not 1 as std.c claims)
+// - FreeBSD: -11 (negative)
+// - macOS: -10 (negative)
 // NOTE_TRIGGER: std.c has 0x08000000 (NOTE_SIGNAL), but BSD uses 0x01000000
-const EVFILT_USER: i16 = 8;
+const EVFILT_USER: i16 = switch (@import("builtin").target.os.tag) {
+    .netbsd => 8,
+    .freebsd => -11,
+    .macos => -10,
+    else => @compileError("EVFILT_USER not defined for this OS"),
+};
 const NOTE_TRIGGER: u32 = 0x01000000;
 
 allocator: std.mem.Allocator,

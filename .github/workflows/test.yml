@@ -95,4 +95,5 @@ jobs:
       if: matrix.run == 'vm' && matrix.vm_type == 'netbsd'
       uses: vmactions/netbsd-vm@v1
       with:
+        release: '10.1'
         run: ./zig-out/bin/test

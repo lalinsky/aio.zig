@@ -458,8 +458,9 @@ pub const AsyncImpl = struct {
             .udata = 0,
         };
         const rc = c.kevent(kqueue_fd, &changes, 1, &.{}, 0, null);
-        if (posix.errno(rc) != .SUCCESS) {
-            return posix.unexpectedErrno(posix.errno(rc));
+        switch (posix.errno(rc)) {
+            .SUCCESS => {},
+            else => |err| return posix.unexpectedErrno(err),
         }
 
         self.* = .{

@@ -51,6 +51,7 @@ pub const LoopState = struct {
                 cancel.result = {};
             }
             cancel.c.has_result = true;
+            completion.canceled = null;
             self.markCompleted(cancel_c);
         }
         completion.state = .completed;

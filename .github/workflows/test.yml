@@ -114,7 +114,7 @@ jobs:
     - name: Build tests
       shell: bash
       run: |
-        for backend in kqueue epoll; do
+        for backend in kqueue poll; do
           echo "Building with backend: $backend"
           zig build -Dinstall-tests -Dbackend=$backend -Dtarget=x86_64-netbsd
           cp zig-out/bin/test zig-out/bin/test-$backend

@@ -7,52 +7,9 @@ on:
   pull_request:
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-
-          - os: ubuntu-latest
-            run: native
-            target: x86_64-linux
-            backends: "epoll,poll"
-
-          - os: ubuntu-latest
-            target: aarch64-linux
-            run: qemu
-            qemu_binary: qemu-aarch64-static
-
-          - os: ubuntu-latest
-            target: riscv64-linux
-            run: qemu
-            qemu_binary: qemu-riscv64-static
-
-          - os: ubuntu-latest
-            target: x86_64-freebsd
-            run: vm
-            vm_type: freebsd
-            backends: "kqueue,poll"
-
-          - os: ubuntu-latest
-            target: x86_64-netbsd
-            run: vm
-            vm_type: netbsd
-            backends: "kqueue,epoll"
-
-
-          - os: macos-latest
-            target: native
-            run: native
-            backends: "kqueue,poll"
-
-          - os: windows-latest
-            target: native
-            run: native
-            backends: "poll"
-
-    runs-on: ${{ matrix.os }}
-
+  # Native build+test jobs (no artifact overhead needed)
+  test-linux-native:
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -62,76 +19,221 @@ jobs:
       with:
         version: 0.15.2
 
-    - name: Build
+    - name: Build and test
       shell: bash
       run: |
-        TARGET_FLAG="${{ matrix.target != 'native' && format('-Dtarget={0}', matrix.target) || '' }}"
-        IFS=',' read -ra BACKENDS <<< "${{ matrix.backends || 'default' }}"
-        for backend in "${BACKENDS[@]}"; do
-          echo "Building with backend: $backend"
-          if [ "$backend" = "default" ]; then
-            zig build -Dinstall-tests $TARGET_FLAG
-          else
-            zig build -Dinstall-tests -Dbackend=$backend $TARGET_FLAG
-            cp zig-out/bin/test zig-out/bin/test-$backend
-          fi
+        for backend in epoll poll; do
+          echo "Building and testing with backend: $backend"
+          zig build -Dinstall-tests -Dbackend=$backend -Dtarget=x86_64-linux
+          ./zig-out/bin/test
         done
-      timeout-minutes: 5
-
-    - name: Run tests (native)
-      if: matrix.run == 'native'
-      shell: bash
-      run: |
-        IFS=',' read -ra BACKENDS <<< "${{ matrix.backends || 'default' }}"
-        for backend in "${BACKENDS[@]}"; do
-          if [ "$backend" = "default" ]; then
-            echo "Running tests with default backend"
-            ./zig-out/bin/test
-          else
-            echo "Running tests with backend: $backend"
-            ./zig-out/bin/test-$backend
-          fi
-        done
-      timeout-minutes: 5
-
-    - name: Install QEMU
-      if: matrix.run == 'qemu'
-      run: |
-        sudo apt-get update -q -y
-        sudo apt-get install -q -y qemu-user-static
-
-    - name: Run tests (QEMU)
-      if: matrix.run == 'qemu'
-      run: ${{ matrix.qemu_binary }} ./zig-out/bin/test
       timeout-minutes: 10
 
-    - name: Run tests (FreeBSD VM)
-      if: matrix.run == 'vm' && matrix.vm_type == 'freebsd'
+  test-macos-native:
+    runs-on: macos-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+
+    - name: Build and test
+      shell: bash
+      run: |
+        for backend in kqueue poll; do
+          echo "Building and testing with backend: $backend"
+          zig build -Dinstall-tests -Dbackend=$backend
+          ./zig-out/bin/test
+        done
+      timeout-minutes: 10
+
+  test-windows-native:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+
+    - name: Build and test
+      shell: bash
+      run: |
+        for backend in poll; do
+          echo "Building and testing with backend: $backend"
+          zig build -Dinstall-tests -Dbackend=$backend
+          ./zig-out/bin/test
+        done
+      timeout-minutes: 10
+
+  # Build jobs for cross-compiled targets
+  build-freebsd:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+
+    - name: Build tests
+      shell: bash
+      run: |
+        for backend in kqueue poll; do
+          echo "Building with backend: $backend"
+          zig build -Dinstall-tests -Dbackend=$backend -Dtarget=x86_64-freebsd
+          cp zig-out/bin/test zig-out/bin/test-$backend
+        done
+      timeout-minutes: 5
+
+    - name: Upload test binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: freebsd-tests
+        path: zig-out/bin/test-*
+        retention-days: 1
+
+  build-netbsd:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+
+    - name: Build tests
+      shell: bash
+      run: |
+        for backend in kqueue epoll; do
+          echo "Building with backend: $backend"
+          zig build -Dinstall-tests -Dbackend=$backend -Dtarget=x86_64-netbsd
+          cp zig-out/bin/test zig-out/bin/test-$backend
+        done
+      timeout-minutes: 5
+
+    - name: Upload test binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: netbsd-tests
+        path: zig-out/bin/test-*
+        retention-days: 1
+
+  build-linux-qemu:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+
+    - name: Build tests
+      shell: bash
+      run: |
+        echo "Building for aarch64-linux"
+        zig build -Dinstall-tests -Dtarget=aarch64-linux
+        cp zig-out/bin/test zig-out/bin/test-aarch64
+
+        echo "Building for riscv64-linux"
+        zig build -Dinstall-tests -Dtarget=riscv64-linux
+        cp zig-out/bin/test zig-out/bin/test-riscv64
+      timeout-minutes: 5
+
+    - name: Upload test binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-qemu-tests
+        path: zig-out/bin/test-*
+        retention-days: 1
+
+  # VM and QEMU test jobs
+  test-freebsd-vm:
+    needs: build-freebsd
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download test binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: freebsd-tests
+
+    - name: Run tests in FreeBSD VM
       uses: vmactions/freebsd-vm@v1
       with:
         run: |
-          for backend in $(echo "${{ matrix.backends || 'default' }}" | tr ',' ' '); do
-            if [ "$backend" = "default" ]; then
-              echo "Running tests with default backend"
-              ./zig-out/bin/test
-            else
-              echo "Running tests with backend: $backend"
-              ./zig-out/bin/test-$backend
-            fi
+          chmod +x test-*
+          for test in test-*; do
+            echo "Running $test"
+            ./$test
           done
 
-    - name: Run tests (NetBSD VM)
-      if: matrix.run == 'vm' && matrix.vm_type == 'netbsd'
+  test-netbsd-vm:
+    needs: build-netbsd
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download test binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: netbsd-tests
+
+    - name: Run tests in NetBSD VM
       uses: vmactions/netbsd-vm@v1
       with:
         release: '10.1'
         run: |
-          for backend in $(echo "${{ matrix.backends || 'default' }}" | tr ',' ' '); do
-            if [ "$backend" = "default" ]; then
-              echo "Running tests with default backend"
-              ./zig-out/bin/test
-            else
-              echo "Running tests with backend: $backend"
-              ./zig-out/bin/test-$backend
-            fi
+          chmod +x test-*
+          for test in test-*; do
+            echo "Running $test"
+            ./$test
           done
+
+  test-qemu-aarch64:
+    needs: build-linux-qemu
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download test binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-qemu-tests
+
+    - name: Install QEMU
+      run: |
+        sudo apt-get update -q -y
+        sudo apt-get install -q -y qemu-user-static
+
+    - name: Run tests
+      run: |
+        chmod +x test-aarch64
+        qemu-aarch64-static ./test-aarch64
+      timeout-minutes: 10
+
+  test-qemu-riscv64:
+    needs: build-linux-qemu
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download test binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-qemu-tests
+
+    - name: Install QEMU
+      run: |
+        sudo apt-get update -q -y
+        sudo apt-get install -q -y qemu-user-static
+
+    - name: Run tests
+      run: |
+        chmod +x test-riscv64
+        qemu-riscv64-static ./test-riscv64
+      timeout-minutes: 10

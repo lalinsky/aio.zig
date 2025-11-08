@@ -8,6 +8,7 @@ pub const ThreadPool = struct {
 
     workers: std.ArrayList(Worker) = .empty,
     workers_mutex: std.Thread.Mutex = .{},
+    next_worker_id: u64 = 0,
 
     queue: Queue(Completion) = .{},
     queue_mutex: std.Thread.Mutex = .{},
@@ -32,12 +33,12 @@ pub const ThreadPool = struct {
     };
 
     const Worker = struct {
-        index: usize,
+        worker_id: u64,
         thread: std.Thread,
     };
 
     pub fn init(self: *ThreadPool, allocator: std.mem.Allocator, options: Options) !void {
-        const cpu_count = std.Thread.cpuCount();
+        const cpu_count = try std.Thread.getCpuCount();
         const max_threads = options.max_threads orelse (cpu_count * 2);
         const min_threads = options.min_threads;
 
@@ -66,32 +67,32 @@ pub const ThreadPool = struct {
 
         if (self.workers.items.len >= self.max_threads) return;
 
+        const worker_id = self.next_worker_id;
+        self.next_worker_id += 1;
+
+        std.log.debug("Spawning thread {}", .{worker_id});
+
         const worker = self.workers.addOneAssumeCapacity();
-        worker.index = self.workers.items.len - 1;
-
-        errdefer self.workers.shrinkRetainingCapacity(worker.index);
-
-        worker.thread = try std.Thread.spawn(.{}, run, .{ self, worker });
+        worker.worker_id = worker_id;
+        worker.thread = try std.Thread.spawn(.{}, run, .{ self, worker_id });
     }
 
-    fn removeThread(self: *ThreadPool, worker: *Worker) bool {
+    fn removeThread(self: *ThreadPool, worker_id: u64, after_shutdown: bool) bool {
         self.workers_mutex.lock();
         defer self.workers_mutex.unlock();
 
-        const allow_removal = self.shutdown or self.workers.items.len > self.min_threads;
+        const allow_removal = after_shutdown or self.workers.items.len > self.min_threads;
         if (!allow_removal) return false;
 
-        for (self.workers.items, 0..) |*w, i| {
-            if (w == worker) {
+        std.log.debug("Removing thread {}", .{worker_id});
+
+        for (self.workers.items, 0..) |*worker, i| {
+            if (worker.worker_id == worker_id) {
                 _ = self.workers.swapRemove(i);
-                if (i < self.workers.items.len) {
-                    self.workers.items[i].index = i;
-                }
                 _ = self.running_threads.fetchSub(1, .monotonic);
                 return true;
             }
         }
-
         unreachable;
     }
 
@@ -153,15 +154,15 @@ pub const ThreadPool = struct {
         return self.queue.remove(&work.c);
     }
 
-    fn run(self: *ThreadPool, worker: *Worker) void {
+    fn run(self: *ThreadPool, worker_id: u64) void {
         while (true) {
-            self.runTasks(worker);
-            if (self.removeThread(worker)) return;
+            const shutdown = self.runTasks();
+            if (self.removeThread(worker_id, shutdown)) return;
         }
         unreachable;
     }
 
-    fn runTasks(self: *ThreadPool, worker: *Worker) void {
+    fn runTasks(self: *ThreadPool) bool {
         self.queue_mutex.lock();
         defer self.queue_mutex.unlock();
 
@@ -170,8 +171,8 @@ pub const ThreadPool = struct {
                 _ = self.idle_threads.fetchAdd(1, .monotonic);
                 defer _ = self.idle_threads.fetchSub(1, .monotonic);
 
-                if (worker.index >= self.min_threads) {
-                    self.queue_not_empty.timedWait(&self.queue_mutex, self.idle_timeout_ns) catch return;
+                if (self.running_threads.load(.monotonic) >= self.min_threads) {
+                    self.queue_not_empty.timedWait(&self.queue_mutex, self.idle_timeout_ns) catch return false;
                 } else {
                     self.queue_not_empty.wait(&self.queue_mutex);
                 }
@@ -183,6 +184,7 @@ pub const ThreadPool = struct {
             defer self.queue_mutex.lock();
 
             const work = c.cast(Work);
+            const loop = work.loop orelse unreachable;
 
             // Try to claim the work by transitioning from pending to running
             if (work.state.cmpxchgStrong(.pending, .running, .acq_rel, .acquire)) |state| {
@@ -191,16 +193,15 @@ pub const ThreadPool = struct {
                 work.result = error.Canceled;
             } else {
                 // We successfully claimed it, execute the work
-                work.func(work.userdata, c);
+                work.func(work.userdata, loop, c);
                 work.result = {};
                 work.state.store(.completed, .release);
             }
 
-            if (work.loop) |loop| {
-                // Notify the event loop
-                loop.state.work_completions.push(c);
-                loop.wake();
-            }
+            // Notify the event loop
+            loop.state.work_completions.push(c);
+            loop.wake();
         }
+        return true;
     }
 };

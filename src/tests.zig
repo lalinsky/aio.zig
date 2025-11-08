@@ -17,6 +17,10 @@ const NetShutdown = @import("completion.zig").NetShutdown;
 const socket = @import("os/posix/socket.zig");
 const time = @import("time.zig");
 
+test {
+    _ = @import("test/thread_pool.zig");
+}
+
 test "Loop: empty run(.no_wait)" {
     var loop: Loop = undefined;
     try loop.init(.{});

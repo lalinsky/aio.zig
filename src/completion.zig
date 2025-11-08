@@ -190,7 +190,7 @@ pub const Work = struct {
         canceled,
     };
 
-    pub const WorkFn = fn (userdata: ?*anyopaque, completion: *Completion) void;
+    pub const WorkFn = fn (userdata: ?*anyopaque, loop: *Loop, completion: *Completion) void;
 
     pub fn init(func: *const WorkFn, userdata: ?*anyopaque) Work {
         return .{

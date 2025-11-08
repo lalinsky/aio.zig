@@ -59,16 +59,16 @@ pub const ThreadPool = struct {
     }
 
     fn spawnThread(self: *ThreadPool) !void {
-        _ = self.running_threads.fetchAdd(1, .monotonic);
-        errdefer _ = self.running_threads.fetchSub(1, .monotonic);
-
         self.workers_mutex.lock();
         defer self.workers_mutex.unlock();
 
         if (self.workers.items.len >= self.max_threads) return;
 
+        _ = self.running_threads.fetchAdd(1, .monotonic);
+        errdefer _ = self.running_threads.fetchSub(1, .monotonic);
+
         const worker_id = self.next_worker_id;
-        self.next_worker_id += 1;
+        self.next_worker_id +%= 1;
 
         std.log.debug("Spawning thread {}", .{worker_id});
 

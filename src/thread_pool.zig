@@ -19,7 +19,7 @@ pub const ThreadPool = struct {
         self.* = .{
             .allocator = allocator,
         };
-        defer self.deinit();
+        errdefer self.deinit();
 
         const num_threads = options.num_threads orelse std.Thread.cpuCount();
         try self.threads.ensureTotalCapacity(allocator, num_threads);

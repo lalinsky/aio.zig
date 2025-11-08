@@ -5,53 +5,135 @@ const Work = @import("completion.zig").Work;
 
 pub const ThreadPool = struct {
     allocator: std.mem.Allocator,
-    threads: std.ArrayList(std.Thread) = .empty,
-    mutex: std.Thread.Mutex = .{},
-    not_empty: std.Thread.Condition = .{},
-    shutdown: bool = false,
+
+    workers: std.ArrayList(Worker) = .empty,
+    workers_mutex: std.Thread.Mutex = .{},
+
     queue: Queue(Completion) = .{},
+    queue_mutex: std.Thread.Mutex = .{},
+    queue_not_empty: std.Thread.Condition = .{},
+    queue_size: usize = 0,
+    shutdown: bool = false,
+
+    min_threads: usize,
+    max_threads: usize,
+
+    idle_timeout_ns: u64,
+    scale_threshold: usize,
+
+    running_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    idle_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
     pub const Options = struct {
-        num_threads: ?usize = null,
+        min_threads: usize = 0,
+        max_threads: ?usize = null,
+        idle_timeout_ms: u64 = 60_000,
+        scale_threshold: usize = 2,
+    };
+
+    const Worker = struct {
+        index: usize,
+        thread: std.Thread,
     };
 
     pub fn init(self: *ThreadPool, allocator: std.mem.Allocator, options: Options) !void {
+        const cpu_count = std.Thread.cpuCount();
+        const max_threads = options.max_threads orelse (cpu_count * 2);
+        const min_threads = options.min_threads;
+
         self.* = .{
             .allocator = allocator,
+            .min_threads = min_threads,
+            .max_threads = max_threads,
+            .idle_timeout_ns = options.idle_timeout_ms * std.time.ns_per_ms,
+            .scale_threshold = options.scale_threshold,
         };
         errdefer self.deinit();
 
-        const num_threads = options.num_threads orelse std.Thread.cpuCount();
-        try self.threads.ensureTotalCapacity(allocator, num_threads);
+        try self.workers.ensureTotalCapacity(allocator, max_threads);
 
-        for (0..num_threads) |_| {
-            const thread = try std.Thread.spawn(.{}, run, .{self});
-            self.threads.appendAssumeCapacity(thread);
+        for (0..min_threads) |_| {
+            try self.spawnThread();
         }
+    }
+
+    fn spawnThread(self: *ThreadPool) !void {
+        _ = self.running_threads.fetchAdd(1, .monotonic);
+        errdefer _ = self.running_threads.fetchSub(1, .monotonic);
+
+        self.workers_mutex.lock();
+        defer self.workers_mutex.unlock();
+
+        if (self.workers.items.len >= self.max_threads) return;
+
+        const worker = self.workers.addOneAssumeCapacity();
+        worker.index = self.workers.items.len - 1;
+
+        errdefer self.workers.shrinkRetainingCapacity(worker.index);
+
+        worker.thread = try std.Thread.spawn(.{}, run, .{ self, worker });
+    }
+
+    fn removeThread(self: *ThreadPool, worker: *Worker) bool {
+        self.workers_mutex.lock();
+        defer self.workers_mutex.unlock();
+
+        if (self.workers.items.len <= self.min_threads) return false;
+
+        for (self.workers.items, 0..) |*w, i| {
+            if (w == worker) {
+                _ = self.workers.swapRemove(i);
+                _ = self.running_threads.fetchSub(1, .monotonic);
+                return true;
+            }
+        }
+
+        unreachable;
     }
 
     pub fn deinit(self: *ThreadPool) void {
         self.stop();
 
-        while (self.threads.pop()) |thread| {
-            thread.join();
+        // Join all threads - they will remove themselves from the list
+        // We need to keep joining until all workers are gone
+        while (true) {
+            self.workers_mutex.lock();
+            const thread = if (self.workers.items.len > 0) self.workers.items[0].thread else null;
+            self.workers_mutex.unlock();
+
+            if (thread) |t| {
+                t.join();
+            } else {
+                break;
+            }
         }
 
-        self.threads.deinit(self.allocator);
+        self.workers.deinit(self.allocator);
     }
 
     pub fn stop(self: *ThreadPool) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.queue_mutex.lock();
+        defer self.queue_mutex.unlock();
         self.shutdown = true;
-        self.not_empty.broadcast();
+        self.queue_not_empty.broadcast();
     }
 
     pub fn submit(self: *ThreadPool, work: *Work) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.queue_mutex.lock();
         self.queue.push(&work.c);
-        self.not_empty.signal();
+        self.queue_size += 1;
+        const queued = self.queue_size;
+        self.queue_not_empty.signal();
+        self.queue_mutex.unlock();
+
+        const running = self.running_threads.load(.monotonic);
+        const idle = self.idle_threads.load(.monotonic);
+        const should_spawn = running < self.min_threads or (idle == 0 and queued >= running * self.scale_threshold and running < self.max_threads);
+        if (should_spawn) {
+            self.spawnThread() catch |err| {
+                std.log.err("Failed to spawn thread: {}", .{err});
+            };
+        }
     }
 
     pub fn cancel(self: *ThreadPool, work: *Work) bool {
@@ -62,23 +144,39 @@ pub const ThreadPool = struct {
         }
 
         // Successfully marked as canceled, now safe to remove from queue
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.queue_mutex.lock();
+        defer self.queue_mutex.unlock();
         return self.queue.remove(&work.c);
     }
 
-    pub fn run(self: *ThreadPool) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    fn run(self: *ThreadPool, worker: *Worker) void {
+        while (true) {
+            self.runTasks(worker);
+            if (self.removeThread(worker)) return;
+        }
+        unreachable;
+    }
+
+    fn runTasks(self: *ThreadPool, worker: *Worker) void {
+        self.queue_mutex.lock();
+        defer self.queue_mutex.unlock();
 
         while (!self.shutdown) {
             const c = self.queue.pop() orelse {
-                self.not_empty.wait(&self.mutex);
+                _ = self.idle_threads.fetchAdd(1, .monotonic);
+                defer _ = self.idle_threads.fetchSub(1, .monotonic);
+
+                if (worker.index >= self.min_threads) {
+                    self.queue_not_empty.timedWait(&self.queue_mutex, self.idle_timeout_ns) catch return;
+                } else {
+                    self.queue_not_empty.wait(&self.queue_mutex);
+                }
                 continue;
             };
+            self.queue_size -= 1;
 
-            self.mutex.unlock();
-            defer self.mutex.lock();
+            self.queue_mutex.unlock();
+            defer self.queue_mutex.lock();
 
             const work = c.cast(Work);
 
@@ -95,6 +193,7 @@ pub const ThreadPool = struct {
             }
 
             if (work.loop) |loop| {
+                // Notify the event loop
                 loop.state.work_completions.push(c);
                 loop.wake();
             }

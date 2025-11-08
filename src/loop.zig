@@ -237,10 +237,6 @@ pub const Loop = struct {
                             const work = cancel.cancel_c.cast(Work);
                             self.state.active += 1; // Count the cancel operation
 
-                            // Set cancel completion pointer so it gets completed with the work
-                            work.c.canceled = &cancel.c;
-                            cancel.result = {};
-
                             if (self.thread_pool) |thread_pool| {
                                 // Try to atomically cancel the work
                                 // This will CAS from .pending to .canceled if work hasn't started
@@ -252,9 +248,15 @@ pub const Loop = struct {
                                 // If cancel failed, work is already running/completed
                                 // The thread pool will complete it and the cancel completion
                             } else {
-                                // No thread pool, work never started
-                                work.result = error.Canceled;
-                                self.state.markCompleted(&work.c);
+                                // No thread pool
+                                if (work.c.state == .completed) {
+                                    cancel.result = error.AlreadyCompleted;
+                                    self.state.markCompleted(&cancel.c);
+                                } else {
+                                    cancel.result = {};
+                                    work.result = error.Canceled;
+                                    self.state.markCompleted(&work.c);
+                                }
                             }
                             return;
                         },

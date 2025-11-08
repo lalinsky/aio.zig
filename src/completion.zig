@@ -136,7 +136,7 @@ pub const Cancel = struct {
     cancel_c: *Completion,
     result: Error!void = undefined,
 
-    pub const Error = error{AlreadyCanceled} || Cancelable;
+    pub const Error = error{ AlreadyCanceled, AlreadyCompleted } || Cancelable;
 
     pub fn init(cancel_c: *Completion) Cancel {
         return .{

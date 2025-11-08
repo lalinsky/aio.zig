@@ -32,6 +32,7 @@ pub const Completion = struct {
     callback: ?*const CallbackFn = null,
 
     canceled: ?*Completion = null,
+    has_result: bool = false,
 
     /// Intrusive linked list of completions.
     /// Used for submission queue OR poll queue (mutually exclusive).
@@ -133,7 +134,7 @@ pub const Cancel = struct {
     cancel_c: *Completion,
     result: Error!void = undefined,
 
-    pub const Error = error{AlreadyCanceled} || Cancelable;
+    pub const Error = error{ AlreadyCompleted, AlreadyCanceled } || Cancelable;
 
     pub fn init(cancel_c: *Completion) Cancel {
         return .{

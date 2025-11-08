@@ -190,6 +190,7 @@ fn processSubmissions(self: *Self, state: *LoopState) !void {
                 cancels.push(completion);
             } else {
                 data.result = error.AlreadyCanceled;
+                data.c.has_result = true;
                 state.markCompleted(completion);
             }
         } else {
@@ -204,7 +205,10 @@ fn processSubmissions(self: *Self, state: *LoopState) !void {
             state.markCompleted(completion);
         } else {
             switch (try self.startCompletion(completion)) {
-                .completed => state.markCompleted(completion),
+                .completed => {
+                    completion.has_result = true;
+                    state.markCompleted(completion);
+                },
                 .running => state.markRunning(completion),
             }
         }
@@ -217,11 +221,8 @@ fn processSubmissions(self: *Self, state: *LoopState) !void {
         const fd = getHandle(cancel.cancel_c);
         try self.removeFromPollQueue(fd, cancel.cancel_c);
 
-        // Set cancel result to success
-        // The canceled operation's result will be error.Canceled via getResult()
-        cancel.result = {};
-
         // Mark the canceled operation as completed, which will recursively mark the cancel as completed
+        // The cancel result will be set in markCompleted based on whether the target had a result
         state.markCompleted(cancel.cancel_c);
     }
 }
@@ -273,6 +274,7 @@ pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !void {
             iter = completion.next;
             switch (checkCompletion(completion, item)) {
                 .completed => {
+                    completion.has_result = true;
                     try self.removeFromPollQueue(fd, completion);
                     state.markCompleted(completion);
                 },
@@ -345,7 +347,9 @@ pub fn startCompletion(self: *Self, c: *Completion) !enum { completed, running }
                     try self.addToPollQueue(data.handle, c);
                     return .running;
                 },
-                else => return .completed, // Error, complete immediately
+                else => {
+                    return .completed; // Error, complete immediately
+                },
             }
         },
         .net_accept => {

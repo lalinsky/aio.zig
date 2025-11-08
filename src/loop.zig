@@ -39,6 +39,18 @@ pub const LoopState = struct {
 
     pub fn markCompleted(self: *LoopState, completion: *Completion) void {
         if (completion.canceled) |cancel_c| {
+            const cancel = cancel_c.cast(Cancel);
+            // The cancel result should not have been set yet
+            std.debug.assert(!cancel.c.has_result);
+            // Check if this completion already has a result set
+            // If so, the cancel operation should fail with AlreadyCompleted
+            // Otherwise, the cancel succeeded
+            if (completion.has_result) {
+                cancel.result = error.AlreadyCompleted;
+            } else {
+                cancel.result = {};
+            }
+            cancel.c.has_result = true;
             self.markCompleted(cancel_c);
         }
         completion.state = .completed;

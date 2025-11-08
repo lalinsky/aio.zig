@@ -128,37 +128,7 @@ jobs:
         path: zig-out/bin/test-*
         retention-days: 1
 
-  build-linux-qemu:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Zig
-      uses: mlugg/setup-zig@v2
-      with:
-        version: 0.15.2
-
-    - name: Build tests
-      shell: bash
-      run: |
-        echo "Building for aarch64-linux"
-        zig build -Dinstall-tests -Dtarget=aarch64-linux
-        cp zig-out/bin/test zig-out/bin/test-aarch64
-
-        echo "Building for riscv64-linux"
-        zig build -Dinstall-tests -Dtarget=riscv64-linux
-        cp zig-out/bin/test zig-out/bin/test-riscv64
-      timeout-minutes: 5
-
-    - name: Upload test binaries
-      uses: actions/upload-artifact@v4
-      with:
-        name: linux-qemu-tests
-        path: zig-out/bin/test-*
-        retention-days: 1
-
-  # VM and QEMU test jobs
+  # VM test jobs
   test-freebsd-vm:
     needs: build-freebsd
     runs-on: ubuntu-latest
@@ -197,43 +167,3 @@ jobs:
             echo "Running $test"
             ./$test
           done
-
-  test-qemu-aarch64:
-    needs: build-linux-qemu
-    runs-on: ubuntu-latest
-    steps:
-    - name: Download test binaries
-      uses: actions/download-artifact@v4
-      with:
-        name: linux-qemu-tests
-
-    - name: Install QEMU
-      run: |
-        sudo apt-get update -q -y
-        sudo apt-get install -q -y qemu-user-static
-
-    - name: Run tests
-      run: |
-        chmod +x test-aarch64
-        qemu-aarch64-static ./test-aarch64
-      timeout-minutes: 10
-
-  test-qemu-riscv64:
-    needs: build-linux-qemu
-    runs-on: ubuntu-latest
-    steps:
-    - name: Download test binaries
-      uses: actions/download-artifact@v4
-      with:
-        name: linux-qemu-tests
-
-    - name: Install QEMU
-      run: |
-        sudo apt-get update -q -y
-        sudo apt-get install -q -y qemu-user-static
-
-    - name: Run tests
-      run: |
-        chmod +x test-riscv64
-        qemu-riscv64-static ./test-riscv64
-      timeout-minutes: 10

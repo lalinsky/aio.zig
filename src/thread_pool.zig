@@ -83,6 +83,9 @@ pub const ThreadPool = struct {
         for (self.workers.items, 0..) |*w, i| {
             if (w == worker) {
                 _ = self.workers.swapRemove(i);
+                if (i < self.workers.items.len) {
+                    self.workers.items[i].index = i;
+                }
                 _ = self.running_threads.fetchSub(1, .monotonic);
                 return true;
             }

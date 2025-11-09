@@ -28,8 +28,6 @@ pub const OperationType = enum {
     file_write,
 };
 
-pub const NoCompletionData = struct {};
-
 pub const Completion = struct {
     op: OperationType,
     state: State = .new,
@@ -50,9 +48,6 @@ pub const Completion = struct {
     /// Used for submission queue OR poll queue (mutually exclusive).
     prev: ?*Completion = null,
     next: ?*Completion = null,
-
-    /// Internal data for the backend.
-    internal: if (@hasDecl(Backend, "CompletionData")) Backend.CompletionData else NoCompletionData = .{},
 
     pub const State = enum { new, adding, running, completed };
 
@@ -401,6 +396,7 @@ pub const NetAccept = struct {
 pub const NetRecv = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
+    internal: if (@hasDecl(Backend, "NetRecvData")) Backend.NetRecvData else struct {} = .{},
     handle: Backend.NetHandle,
     buffers: []net.iovec,
     flags: net.RecvFlags,
@@ -424,6 +420,7 @@ pub const NetRecv = struct {
 pub const NetSend = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
+    internal: if (@hasDecl(Backend, "NetSendData")) Backend.NetSendData else struct {} = .{},
     handle: Backend.NetHandle,
     buffers: []const net.iovec_const,
     flags: net.SendFlags,
@@ -447,6 +444,7 @@ pub const NetSend = struct {
 pub const NetRecvFrom = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
+    internal: if (@hasDecl(Backend, "NetRecvFromData")) Backend.NetRecvFromData else struct {} = .{},
     handle: Backend.NetHandle,
     buffers: []net.iovec,
     flags: net.RecvFlags,
@@ -480,6 +478,7 @@ pub const NetRecvFrom = struct {
 pub const NetSendTo = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
+    internal: if (@hasDecl(Backend, "NetSendToData")) Backend.NetSendToData else struct {} = .{},
     handle: Backend.NetHandle,
     buffers: []const net.iovec_const,
     flags: net.SendFlags,

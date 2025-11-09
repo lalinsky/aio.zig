@@ -27,11 +27,20 @@ const FileWrite = @import("../completion.zig").FileWrite;
 
 pub const NetHandle = net.fd_t;
 
-// Backend-specific completion data embedded in each Completion
-// Stores msghdr structures that must remain valid for io_uring operations
-pub const CompletionData = struct {
-    msg_recv: linux.msghdr = undefined,
-    msg_send: linux.msghdr_const = undefined,
+pub const NetRecvData = struct {
+    msg: linux.msghdr = undefined,
+};
+
+pub const NetSendData = struct {
+    msg: linux.msghdr_const = undefined,
+};
+
+pub const NetRecvFromData = struct {
+    msg: linux.msghdr = undefined,
+};
+
+pub const NetSendToData = struct {
+    msg: linux.msghdr_const = undefined,
 };
 
 pub const FileOpenData = struct {
@@ -316,7 +325,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
         .net_recv => {
             const data = c.cast(NetRecv);
             // Store msghdr in completion internal data so it remains valid
-            c.internal.msg_recv = .{
+            data.internal.msg = .{
                 .name = null,
                 .namelen = 0,
                 .iov = data.buffers.ptr,
@@ -328,7 +337,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
             _ = try self.ring.recvmsg(
                 @intFromPtr(c),
                 data.handle,
-                &c.internal.msg_recv,
+                &data.internal.msg,
                 recvFlagsToMsg(data.flags),
             );
             return .running;
@@ -336,7 +345,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
         .net_send => {
             const data = c.cast(NetSend);
             // Store msghdr in completion internal data so it remains valid
-            c.internal.msg_send = .{
+            data.internal.msg = .{
                 .name = null,
                 .namelen = 0,
                 .iov = data.buffers.ptr,
@@ -348,7 +357,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
             _ = try self.ring.sendmsg(
                 @intFromPtr(c),
                 data.handle,
-                &c.internal.msg_send,
+                &data.internal.msg,
                 sendFlagsToMsg(data.flags),
             );
             return .running;
@@ -356,7 +365,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
         .net_recvfrom => {
             const data = c.cast(NetRecvFrom);
             // Store msghdr in completion internal data so it remains valid
-            c.internal.msg_recv = .{
+            data.internal.msg = .{
                 .name = @ptrCast(data.addr),
                 .namelen = if (data.addr_len) |len| len.* else 0,
                 .iov = data.buffers.ptr,
@@ -368,7 +377,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
             _ = try self.ring.recvmsg(
                 @intFromPtr(c),
                 data.handle,
-                &c.internal.msg_recv,
+                &data.internal.msg,
                 recvFlagsToMsg(data.flags),
             );
             return .running;
@@ -376,7 +385,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
         .net_sendto => {
             const data = c.cast(NetSendTo);
             // Store msghdr in completion internal data so it remains valid
-            c.internal.msg_send = .{
+            data.internal.msg = .{
                 .name = @ptrCast(data.addr),
                 .namelen = data.addr_len,
                 .iov = data.buffers.ptr,
@@ -388,7 +397,7 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
             _ = try self.ring.sendmsg(
                 @intFromPtr(c),
                 data.handle,
-                &c.internal.msg_send,
+                &data.internal.msg,
                 sendFlagsToMsg(data.flags),
             );
             return .running;
@@ -520,7 +529,7 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
                 // Propagate the peer address length filled in by the kernel
                 const data = c.cast(NetRecvFrom);
                 if (data.addr_len) |len_ptr| {
-                    len_ptr.* = c.internal.msg_recv.namelen;
+                    len_ptr.* = data.internal.msg.namelen;
                 }
             }
         },

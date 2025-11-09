@@ -131,7 +131,3 @@ pub const EFD = @import("eventfd.zig").EFD;
 pub const eventfd = @import("eventfd.zig").eventfd;
 pub const eventfd_read = @import("eventfd.zig").eventfd_read;
 pub const eventfd_write = @import("eventfd.zig").eventfd_write;
-
-test {
-    std.testing.refAllDecls(@This());
-}

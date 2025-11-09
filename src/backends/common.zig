@@ -9,7 +9,7 @@ const socket = @import("../os/posix/socket.zig");
 /// Helper to handle socket open operation
 pub fn handleNetOpen(c: *Completion) void {
     const data = c.cast(NetOpen);
-    if (socket.open(data.domain, data.sock_type, data.protocol)) |handle| {
+    if (socket.socket(data.domain, data.socket_type, data.protocol, data.flags)) |handle| {
         c.setResult(.net_open, handle);
     } else |err| {
         c.setError(err);
@@ -54,9 +54,6 @@ pub fn handleNetShutdown(c: *Completion) void {
 /// Helper to handle close operation
 pub fn handleNetClose(c: *Completion) void {
     const data = c.cast(NetClose);
-    if (socket.close(data.handle)) |_| {
-        c.setResult(.net_close, {});
-    } else |err| {
-        c.setError(err);
-    }
+    socket.close(data.handle);
+    c.setResult(.net_close, {});
 }

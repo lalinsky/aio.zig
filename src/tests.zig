@@ -19,6 +19,7 @@ const time = @import("time.zig");
 
 test {
     _ = @import("test/thread_pool.zig");
+    _ = @import("test/server.zig");
 }
 
 test "Loop: empty run(.no_wait)" {

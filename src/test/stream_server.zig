@@ -10,6 +10,7 @@ const NetAccept = @import("../completion.zig").NetAccept;
 const NetConnect = @import("../completion.zig").NetConnect;
 const NetRecv = @import("../completion.zig").NetRecv;
 const NetSend = @import("../completion.zig").NetSend;
+const NetShutdown = @import("../completion.zig").NetShutdown;
 const NetClose = @import("../completion.zig").NetClose;
 const socket = @import("../os/posix/socket.zig");
 const time = @import("../time.zig");
@@ -276,6 +277,7 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
             open: NetOpen,
             connect: NetConnect,
             send: NetSend,
+            shutdown: NetShutdown,
             recv: NetRecv,
             close: NetClose,
         },
@@ -292,6 +294,7 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
             opening,
             connecting,
             sending,
+            shutting_down,
             receiving,
             closing,
             done,
@@ -362,6 +365,23 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
             const self: *Self = @ptrCast(@alignCast(c.userdata.?));
 
             _ = self.comp.send.getResult() catch {
+                self.state = .failed;
+                loop.stop();
+                return;
+            };
+
+            // Shutdown send side to signal end of data
+            self.state = .shutting_down;
+            self.comp = .{ .shutdown = NetShutdown.init(self.client_sock, .send) };
+            self.comp.shutdown.c.callback = shutdownCallback;
+            self.comp.shutdown.c.userdata = self;
+            loop.add(&self.comp.shutdown.c);
+        }
+
+        fn shutdownCallback(loop: *Loop, c: *Completion) void {
+            const self: *Self = @ptrCast(@alignCast(c.userdata.?));
+
+            self.comp.shutdown.c.getResult(.net_shutdown) catch {
                 self.state = .failed;
                 loop.stop();
                 return;

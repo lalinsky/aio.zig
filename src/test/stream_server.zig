@@ -294,6 +294,7 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
         send_iov: [1]socket.iovec_const = undefined,
         recv_buf: [1024]u8 = undefined,
         recv_iov: [1]socket.iovec = undefined,
+        bytes_sent: usize = 0,
         bytes_received: usize = 0,
 
         pub const State = enum {
@@ -361,6 +362,7 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
             };
 
             self.state = .sending;
+            self.bytes_sent = 0;
             self.send_iov = [_]socket.iovec_const{socket.iovecConstFromSlice(self.send_buf)};
             self.comp = .{ .send = NetSend.init(self.client_sock, &self.send_iov, .{}) };
             self.comp.send.c.callback = sendCallback;
@@ -371,13 +373,27 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
         fn sendCallback(loop: *Loop, c: *Completion) void {
             const self: *Self = @ptrCast(@alignCast(c.userdata.?));
 
-            _ = self.comp.send.getResult() catch {
+            const bytes_written = self.comp.send.getResult() catch {
                 self.state = .failed;
                 loop.stop();
                 return;
             };
 
-            // Shutdown send side to signal end of data
+            self.bytes_sent += bytes_written;
+
+            // Check if we've sent everything
+            if (self.bytes_sent < self.send_buf.len) {
+                // Partial write - continue sending remaining data
+                const remaining = self.send_buf[self.bytes_sent..];
+                self.send_iov = [_]socket.iovec_const{socket.iovecConstFromSlice(remaining)};
+                self.comp = .{ .send = NetSend.init(self.client_sock, &self.send_iov, .{}) };
+                self.comp.send.c.callback = sendCallback;
+                self.comp.send.c.userdata = self;
+                loop.add(&self.comp.send.c);
+                return;
+            }
+
+            // All data sent - shutdown send side to signal end of data
             self.state = .shutting_down;
             self.comp = .{ .shutdown = NetShutdown.init(self.client_sock, .send) };
             self.comp.shutdown.c.callback = shutdownCallback;

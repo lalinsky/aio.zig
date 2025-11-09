@@ -142,7 +142,7 @@ pub fn openat(allocator: std.mem.Allocator, dir: fd_t, path: []const u8, mode: m
     while (true) {
         const rc = posix.system.openat(dir, path_z.ptr, open_flags, mode);
         switch (posix.errno(rc)) {
-            .SUCCESS => return rc,
+            .SUCCESS => return @intCast(rc),
             .INTR => continue,
             else => |err| return errnoToFileOpenError(err),
         }
@@ -150,16 +150,21 @@ pub fn openat(allocator: std.mem.Allocator, dir: fd_t, path: []const u8, mode: m
 }
 
 /// Close a file descriptor
-pub fn close(fd: fd_t) error{}!void {
+pub fn close(fd: fd_t) FileCloseError!void {
     if (builtin.os.tag == .windows) {
         const w = std.os.windows;
         _ = w.CloseHandle(fd);
         return;
     }
 
-    // close() errors are generally ignored in async contexts
-    // because the fd is invalid after close regardless of error
-    _ = posix.system.close(fd);
+    while (true) {
+        const rc = posix.system.close(fd);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return,
+            .INTR => continue,
+            else => |err| return errnoToFileCloseError(err),
+        }
+    }
 }
 
 /// Read from file at offset using preadv()
@@ -199,12 +204,10 @@ pub fn preadv(fd: fd_t, buffers: []iovec, offset: u64) FileReadError!usize {
 
     while (true) {
         const rc = posix.system.preadv(fd, buffers.ptr, @intCast(buffers.len), @intCast(offset));
-        if (rc == -1) {
-            switch (posix.errno(rc)) {
-                .SUCCESS => return @intCast(rc),
-                .INTR => continue,
-                else => |err| return errnoToFileReadError(err),
-            }
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            else => |err| return errnoToFileReadError(err),
         }
     }
 }
@@ -246,12 +249,10 @@ pub fn pwritev(fd: fd_t, buffers: []const iovec_const, offset: u64) FileWriteErr
 
     while (true) {
         const rc = posix.system.pwritev(fd, buffers.ptr, @intCast(buffers.len), @intCast(offset));
-        if (rc == -1) {
-            switch (posix.errno(rc)) {
-                .SUCCESS => return @intCast(rc),
-                .INTR => continue,
-                else => |err| return errnoToFileWriteError(err),
-            }
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            else => |err| return errnoToFileWriteError(err),
         }
     }
 }

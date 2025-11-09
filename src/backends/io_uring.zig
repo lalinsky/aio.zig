@@ -1,8 +1,8 @@
 const std = @import("std");
 const linux = std.os.linux;
 const posix_os = @import("../os/posix.zig");
-const socket = @import("../os/posix/socket.zig");
-const time = @import("../time.zig");
+const net = @import("../os/net.zig");
+const time = @import("../os/time.zig");
 const common = @import("common.zig");
 const LoopState = @import("../loop.zig").LoopState;
 const Completion = @import("../completion.zig").Completion;
@@ -20,14 +20,22 @@ const NetRecvFrom = @import("../completion.zig").NetRecvFrom;
 const NetSendTo = @import("../completion.zig").NetSendTo;
 const NetClose = @import("../completion.zig").NetClose;
 const NetShutdown = @import("../completion.zig").NetShutdown;
+const FileOpen = @import("../completion.zig").FileOpen;
+const FileClose = @import("../completion.zig").FileClose;
+const FileRead = @import("../completion.zig").FileRead;
+const FileWrite = @import("../completion.zig").FileWrite;
 
-pub const NetHandle = socket.fd_t;
+pub const NetHandle = net.fd_t;
 
 // Backend-specific completion data embedded in each Completion
 // Stores msghdr structures that must remain valid for io_uring operations
 pub const CompletionData = struct {
     msg_recv: linux.msghdr = undefined,
     msg_send: linux.msghdr_const = undefined,
+};
+
+pub const FileOpenData = struct {
+    path: [:0]const u8 = "",
 };
 
 const Self = @This();
@@ -257,10 +265,12 @@ pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
 
 fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
     switch (c.op) {
+        .timer, .async, .work, .cancel => unreachable,
+
         // Synchronous operations (no io_uring support or always immediate)
         .net_open => {
             const data = c.cast(NetOpen);
-            if (socket.socket(
+            if (net.socket(
                 data.domain,
                 data.socket_type,
                 data.protocol,
@@ -401,23 +411,65 @@ fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
             return .running;
         },
 
-        else => unreachable,
+        .file_open => {
+            const data = c.cast(FileOpen);
+            const path = self.allocator.dupeZ(u8, data.path) catch {
+                c.setError(error.SystemResources);
+                return .completed;
+            };
+            errdefer self.allocator.free(path);
+            const sqe = try self.ring.get_sqe();
+            const flags = linux.O{
+                .APPEND = data.flags.append,
+                .CREAT = data.flags.create,
+                .TRUNC = data.flags.truncate,
+                .EXCL = data.flags.exclusive,
+            };
+            sqe.prep_openat(data.dir, path, flags, data.mode);
+            sqe.user_data = @intFromPtr(c);
+            data.internal.path = path;
+            return .running;
+        },
+        .file_close => {
+            const data = c.cast(FileClose);
+            const sqe = try self.ring.get_sqe();
+            sqe.prep_close(data.handle);
+            sqe.user_data = @intFromPtr(c);
+            return .running;
+        },
+        .file_read => {
+            const data = c.cast(FileRead);
+            const sqe = try self.ring.get_sqe();
+            sqe.prep_readv(data.handle, data.buffers, data.offset);
+            sqe.user_data = @intFromPtr(c);
+            return .running;
+        },
+        .file_write => {
+            const data = c.cast(FileWrite);
+            const sqe = try self.ring.get_sqe();
+            sqe.prep_writev(data.handle, data.buffers, data.offset);
+            sqe.user_data = @intFromPtr(c);
+            return .running;
+        },
     }
 }
 
 fn storeResult(self: *Self, c: *Completion, res: i32) void {
-    _ = self;
-
     // ECANCELED (125) is returned by io_uring when an operation is canceled
     const ECANCELED = 125;
 
     switch (c.op) {
+        .timer, .async, .work, .cancel => unreachable,
+        .net_open => unreachable,
+        .net_bind => unreachable,
+        .net_listen => unreachable,
+
         .net_connect => {
             if (res < 0) {
                 if (-res == ECANCELED) {
                     c.setError(error.Canceled);
                 } else {
-                    c.setError(socket.errnoToConnectError(-res));
+                    c.setError(net.errnoToConnectError(-res));
                 }
             } else {
                 c.setResult(.net_connect, {});
@@ -428,10 +480,10 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
                 if (-res == ECANCELED) {
                     c.setError(error.Canceled);
                 } else {
-                    c.setError(socket.errnoToAcceptError(-res));
+                    c.setError(net.errnoToAcceptError(-res));
                 }
             } else {
-                c.setResult(.net_accept, @as(socket.fd_t, @intCast(res)));
+                c.setResult(.net_accept, @as(net.fd_t, @intCast(res)));
             }
         },
         .net_recv => {
@@ -439,7 +491,7 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
                 if (-res == ECANCELED) {
                     c.setError(error.Canceled);
                 } else {
-                    c.setError(socket.errnoToRecvError(-res));
+                    c.setError(net.errnoToRecvError(-res));
                 }
             } else {
                 c.setResult(.net_recv, @as(usize, @intCast(res)));
@@ -450,7 +502,7 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
                 if (-res == ECANCELED) {
                     c.setError(error.Canceled);
                 } else {
-                    c.setError(socket.errnoToSendError(-res));
+                    c.setError(net.errnoToSendError(-res));
                 }
             } else {
                 c.setResult(.net_send, @as(usize, @intCast(res)));
@@ -461,7 +513,7 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
                 if (-res == ECANCELED) {
                     c.setError(error.Canceled);
                 } else {
-                    c.setError(socket.errnoToRecvError(-res));
+                    c.setError(net.errnoToRecvError(-res));
                 }
             } else {
                 c.setResult(.net_recvfrom, @as(usize, @intCast(res)));
@@ -477,7 +529,7 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
                 if (-res == ECANCELED) {
                     c.setError(error.Canceled);
                 } else {
-                    c.setError(socket.errnoToSendError(-res));
+                    c.setError(net.errnoToSendError(-res));
                 }
             } else {
                 c.setResult(.net_sendto, @as(usize, @intCast(res)));
@@ -499,12 +551,64 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
             // But we still need to use setResult to handle cancelation race conditions
             c.setResult(.net_close, {});
         },
-        // Cancel CQEs are always skipped in tick(), so cancel should never reach storeResult
-        else => unreachable,
+
+        .file_open => {
+            const data = c.cast(FileOpen);
+            self.allocator.free(data.internal.path);
+            if (res < 0) {
+                if (-res == ECANCELED) {
+                    c.setError(error.Canceled);
+                } else {
+                    c.setError(error.Unexpected);
+                    // TODO c.setError(errnoToOpenError(-res));
+                }
+            } else {
+                c.setResult(.file_open, res);
+            }
+        },
+
+        .file_close => {
+            if (res < 0) {
+                if (-res == ECANCELED) {
+                    c.setError(error.Canceled);
+                } else {
+                    c.setError(error.Unexpected);
+                    // TODO c.setError(errnoToCloseError(-res));
+                }
+            } else {
+                c.setResult(.file_close, {});
+            }
+        },
+
+        .file_read => {
+            if (res < 0) {
+                if (-res == ECANCELED) {
+                    c.setError(error.Canceled);
+                } else {
+                    c.setError(error.Unexpected);
+                    // TODO c.setError(errnoToReadError(-res));
+                }
+            } else {
+                c.setResult(.file_read, @as(usize, @intCast(res)));
+            }
+        },
+
+        .file_write => {
+            if (res < 0) {
+                if (-res == ECANCELED) {
+                    c.setError(error.Canceled);
+                } else {
+                    c.setError(error.Unexpected);
+                    // TODO c.setError(errnoToWriteError(-res));
+                }
+            } else {
+                c.setResult(.file_write, @as(usize, @intCast(res)));
+            }
+        },
     }
 }
 
-fn errnoToShutdownError(err: i32) socket.ShutdownError {
+fn errnoToShutdownError(err: i32) net.ShutdownError {
     const errno_val: linux.E = @enumFromInt(err);
     return switch (errno_val) {
         .NOTCONN => error.NotConnected,
@@ -513,14 +617,14 @@ fn errnoToShutdownError(err: i32) socket.ShutdownError {
     };
 }
 
-fn recvFlagsToMsg(flags: socket.RecvFlags) u32 {
+fn recvFlagsToMsg(flags: net.RecvFlags) u32 {
     var msg_flags: u32 = 0;
     if (flags.peek) msg_flags |= linux.MSG.PEEK;
     if (flags.waitall) msg_flags |= linux.MSG.WAITALL;
     return msg_flags;
 }
 
-fn sendFlagsToMsg(flags: socket.SendFlags) u32 {
+fn sendFlagsToMsg(flags: net.SendFlags) u32 {
     var msg_flags: u32 = 0;
     if (flags.no_signal) msg_flags |= linux.MSG.NOSIGNAL;
     return msg_flags;

@@ -3,7 +3,8 @@ const std = @import("std");
 const Loop = @import("loop.zig").Loop;
 const Backend = @import("backend.zig").Backend;
 const HeapNode = @import("heap.zig").HeapNode;
-const socket = @import("os/posix/socket.zig");
+const net = @import("os/net.zig");
+const fs = @import("os/fs.zig");
 
 pub const OperationType = enum {
     timer,
@@ -21,6 +22,10 @@ pub const OperationType = enum {
     net_sendto,
     net_shutdown,
     net_close,
+    file_open,
+    file_close,
+    file_read,
+    file_write,
 };
 
 pub const NoCompletionData = struct {};
@@ -129,6 +134,10 @@ pub fn completionOp(comptime T: type) OperationType {
         NetSendTo => .net_sendto,
         NetClose => .net_close,
         NetShutdown => .net_shutdown,
+        FileOpen => .file_open,
+        FileClose => .file_close,
+        FileRead => .file_read,
+        FileWrite => .file_write,
         else => @compileError("unknown completion type"),
     };
 }
@@ -150,6 +159,10 @@ pub fn CompletionType(comptime op: OperationType) type {
         .net_sendto => NetSendTo,
         .net_close => NetClose,
         .net_shutdown => NetShutdown,
+        .file_open => FileOpen,
+        .file_close => FileClose,
+        .file_read => FileRead,
+        .file_write => FileWrite,
     };
 }
 
@@ -261,11 +274,11 @@ pub const NetShutdown = struct {
     c: Completion,
     result_private_do_not_touch: void = {},
     handle: Backend.NetHandle,
-    how: socket.ShutdownHow,
+    how: net.ShutdownHow,
 
-    pub const Error = socket.ShutdownError || Cancelable;
+    pub const Error = net.ShutdownError || Cancelable;
 
-    pub fn init(handle: Backend.NetHandle, how: socket.ShutdownHow) NetShutdown {
+    pub fn init(handle: Backend.NetHandle, how: net.ShutdownHow) NetShutdown {
         return .{
             .c = .init(.net_shutdown),
             .handle = handle,
@@ -277,17 +290,17 @@ pub const NetShutdown = struct {
 pub const NetOpen = struct {
     c: Completion,
     result_private_do_not_touch: Backend.NetHandle = undefined,
-    domain: socket.Domain,
-    socket_type: socket.Type,
-    protocol: socket.Protocol,
-    flags: socket.OpenFlags = .{ .nonblocking = true },
+    domain: net.Domain,
+    socket_type: net.Type,
+    protocol: net.Protocol,
+    flags: net.OpenFlags = .{ .nonblocking = true },
 
-    pub const Error = socket.OpenError || Cancelable;
+    pub const Error = net.OpenError || Cancelable;
 
     pub fn init(
-        domain: socket.Domain,
-        socket_type: socket.Type,
-        protocol: socket.Protocol,
+        domain: net.Domain,
+        socket_type: net.Type,
+        protocol: net.Protocol,
     ) NetOpen {
         return .{
             .c = .init(.net_open),
@@ -302,12 +315,12 @@ pub const NetBind = struct {
     c: Completion,
     result_private_do_not_touch: void = {},
     handle: Backend.NetHandle,
-    addr: *socket.sockaddr,
-    addr_len: *socket.socklen_t,
+    addr: *net.sockaddr,
+    addr_len: *net.socklen_t,
 
-    pub const Error = socket.BindError || Cancelable;
+    pub const Error = net.BindError || Cancelable;
 
-    pub fn init(handle: Backend.NetHandle, addr: *socket.sockaddr, addr_len: *socket.socklen_t) NetBind {
+    pub fn init(handle: Backend.NetHandle, addr: *net.sockaddr, addr_len: *net.socklen_t) NetBind {
         return .{
             .c = .init(.net_bind),
             .handle = handle,
@@ -323,7 +336,7 @@ pub const NetListen = struct {
     handle: Backend.NetHandle,
     backlog: u31,
 
-    pub const Error = socket.ListenError || Cancelable;
+    pub const Error = net.ListenError || Cancelable;
 
     pub fn init(handle: Backend.NetHandle, backlog: u31) NetListen {
         return .{
@@ -338,12 +351,12 @@ pub const NetConnect = struct {
     c: Completion,
     result_private_do_not_touch: void = {},
     handle: Backend.NetHandle,
-    addr: *const socket.sockaddr,
-    addr_len: socket.socklen_t,
+    addr: *const net.sockaddr,
+    addr_len: net.socklen_t,
 
-    pub const Error = socket.ConnectError || Cancelable;
+    pub const Error = net.ConnectError || Cancelable;
 
-    pub fn init(handle: Backend.NetHandle, addr: *const socket.sockaddr, addr_len: socket.socklen_t) NetConnect {
+    pub fn init(handle: Backend.NetHandle, addr: *const net.sockaddr, addr_len: net.socklen_t) NetConnect {
         return .{
             .c = .init(.net_connect),
             .handle = handle,
@@ -361,16 +374,16 @@ pub const NetAccept = struct {
     c: Completion,
     result_private_do_not_touch: Backend.NetHandle = undefined,
     handle: Backend.NetHandle,
-    addr: ?*socket.sockaddr,
-    addr_len: ?*socket.socklen_t,
-    flags: socket.OpenFlags = .{ .nonblocking = true },
+    addr: ?*net.sockaddr,
+    addr_len: ?*net.socklen_t,
+    flags: net.OpenFlags = .{ .nonblocking = true },
 
-    pub const Error = socket.AcceptError || Cancelable;
+    pub const Error = net.AcceptError || Cancelable;
 
     pub fn init(
         handle: Backend.NetHandle,
-        addr: ?*socket.sockaddr,
-        addr_len: ?*socket.socklen_t,
+        addr: ?*net.sockaddr,
+        addr_len: ?*net.socklen_t,
     ) NetAccept {
         return .{
             .c = .init(.net_accept),
@@ -389,12 +402,12 @@ pub const NetRecv = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
     handle: Backend.NetHandle,
-    buffers: []socket.iovec,
-    flags: socket.RecvFlags,
+    buffers: []net.iovec,
+    flags: net.RecvFlags,
 
-    pub const Error = socket.RecvError || Cancelable;
+    pub const Error = net.RecvError || Cancelable;
 
-    pub fn init(handle: Backend.NetHandle, buffers: []socket.iovec, flags: socket.RecvFlags) NetRecv {
+    pub fn init(handle: Backend.NetHandle, buffers: []net.iovec, flags: net.RecvFlags) NetRecv {
         return .{
             .c = .init(.net_recv),
             .handle = handle,
@@ -412,12 +425,12 @@ pub const NetSend = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
     handle: Backend.NetHandle,
-    buffers: []const socket.iovec_const,
-    flags: socket.SendFlags,
+    buffers: []const net.iovec_const,
+    flags: net.SendFlags,
 
-    pub const Error = socket.SendError || Cancelable;
+    pub const Error = net.SendError || Cancelable;
 
-    pub fn init(handle: Backend.NetHandle, buffers: []const socket.iovec_const, flags: socket.SendFlags) NetSend {
+    pub fn init(handle: Backend.NetHandle, buffers: []const net.iovec_const, flags: net.SendFlags) NetSend {
         return .{
             .c = .init(.net_send),
             .handle = handle,
@@ -435,19 +448,19 @@ pub const NetRecvFrom = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
     handle: Backend.NetHandle,
-    buffers: []socket.iovec,
-    flags: socket.RecvFlags,
-    addr: ?*socket.sockaddr,
-    addr_len: ?*socket.socklen_t,
+    buffers: []net.iovec,
+    flags: net.RecvFlags,
+    addr: ?*net.sockaddr,
+    addr_len: ?*net.socklen_t,
 
-    pub const Error = socket.RecvError || Cancelable;
+    pub const Error = net.RecvError || Cancelable;
 
     pub fn init(
         handle: Backend.NetHandle,
-        buffers: []socket.iovec,
-        flags: socket.RecvFlags,
-        addr: ?*socket.sockaddr,
-        addr_len: ?*socket.socklen_t,
+        buffers: []net.iovec,
+        flags: net.RecvFlags,
+        addr: ?*net.sockaddr,
+        addr_len: ?*net.socklen_t,
     ) NetRecvFrom {
         return .{
             .c = .init(.net_recvfrom),
@@ -468,19 +481,19 @@ pub const NetSendTo = struct {
     c: Completion,
     result_private_do_not_touch: usize = undefined,
     handle: Backend.NetHandle,
-    buffers: []const socket.iovec_const,
-    flags: socket.SendFlags,
-    addr: *const socket.sockaddr,
-    addr_len: socket.socklen_t,
+    buffers: []const net.iovec_const,
+    flags: net.SendFlags,
+    addr: *const net.sockaddr,
+    addr_len: net.socklen_t,
 
-    pub const Error = socket.SendError || Cancelable;
+    pub const Error = net.SendError || Cancelable;
 
     pub fn init(
         handle: Backend.NetHandle,
-        buffers: []const socket.iovec_const,
-        flags: socket.SendFlags,
-        addr: *const socket.sockaddr,
-        addr_len: socket.socklen_t,
+        buffers: []const net.iovec_const,
+        flags: net.SendFlags,
+        addr: *const net.sockaddr,
+        addr_len: net.socklen_t,
     ) NetSendTo {
         return .{
             .c = .init(.net_sendto),
@@ -494,5 +507,96 @@ pub const NetSendTo = struct {
 
     pub fn getResult(self: *const NetSendTo) Error!usize {
         return self.c.getResult(.net_sendto);
+    }
+};
+
+pub const FileOpen = struct {
+    c: Completion,
+    result_private_do_not_touch: fs.fd_t = undefined,
+    internal: if (@hasDecl(Backend, "FileOpenData")) Backend.FileOpenData else struct {} = .{},
+    dir: fs.fd_t,
+    path: []const u8,
+    mode: fs.mode_t,
+    flags: fs.FileOpenFlags,
+
+    pub const Error = fs.FileOpenError || Cancelable;
+
+    pub fn init(dir: fs.fd_t, path: []const u8, mode: u32, flags: fs.FileOpenFlags) FileOpen {
+        return .{
+            .c = .init(.file_open),
+            .dir = dir,
+            .path = path,
+            .flags = flags,
+            .mode = mode,
+        };
+    }
+
+    pub fn getResult(self: *const FileOpen) Error!fs.fd_t {
+        return self.c.getResult(.file_open);
+    }
+};
+
+pub const FileClose = struct {
+    c: Completion,
+    result_private_do_not_touch: void = {},
+    handle: fs.fd_t,
+
+    pub const Error = Cancelable;
+
+    pub fn init(handle: fs.fd_t) FileClose {
+        return .{
+            .c = .init(.file_close),
+            .handle = handle,
+        };
+    }
+
+    pub fn getResult(self: *const FileClose) Error!void {
+        return self.c.getResult(.file_close);
+    }
+};
+
+pub const FileRead = struct {
+    c: Completion,
+    result_private_do_not_touch: usize = undefined,
+    handle: fs.fd_t,
+    buffers: []fs.iovec,
+    offset: u64,
+
+    pub const Error = fs.FileReadError || Cancelable;
+
+    pub fn init(handle: fs.fd_t, buffers: []fs.iovec, offset: u64) FileRead {
+        return .{
+            .c = .init(.file_read),
+            .handle = handle,
+            .buffers = buffers,
+            .offset = offset,
+        };
+    }
+
+    pub fn getResult(self: *const FileRead) Error!usize {
+        return self.c.getResult(.file_read);
+    }
+};
+
+pub const FileWrite = struct {
+    c: Completion,
+    result_private_do_not_touch: usize = undefined,
+    handle: fs.fd_t,
+    buffers: []const fs.iovec_const,
+    offset: u64,
+
+    pub const Error = fs.FileWriteError || Cancelable;
+
+    pub fn init(handle: fs.fd_t, buffers: []const fs.iovec_const, offset: u64) FileWrite {
+        return .{
+            .c = .init(.file_write),
+            .handle = handle,
+            .buffers = buffers,
+            .offset = offset,
+        };
+    }
+
+    pub fn getResult(self: *const FileWrite) Error!usize {
+        return self.c.getResult(.file_write);
     }
 };

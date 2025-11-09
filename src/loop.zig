@@ -9,8 +9,8 @@ const Queue = @import("queue.zig").Queue;
 const Heap = @import("heap.zig").Heap;
 const Work = @import("completion.zig").Work;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
-const time = @import("time.zig");
-const socket = @import("os/posix/socket.zig");
+const time = @import("os/time.zig");
+const net = @import("os/net.zig");
 
 pub const RunMode = enum {
     no_wait,
@@ -147,7 +147,7 @@ pub const Loop = struct {
             .thread_pool = options.thread_pool,
         };
 
-        socket.ensureWSAInitialized();
+        net.ensureWSAInitialized();
         self.state.updateNow();
 
         try self.backend.init(std.heap.page_allocator);

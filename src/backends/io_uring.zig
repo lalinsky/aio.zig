@@ -1,6 +1,6 @@
 const std = @import("std");
 const linux = std.os.linux;
-const posix = std.posix;
+const posix_os = @import("../os/posix.zig");
 const socket = @import("../os/posix/socket.zig");
 const time = @import("../time.zig");
 const LoopState = @import("../loop.zig").LoopState;
@@ -25,8 +25,8 @@ pub const NetHandle = socket.fd_t;
 // Backend-specific completion data embedded in each Completion
 // Stores msghdr structures that must remain valid for io_uring operations
 pub const CompletionData = struct {
-    msg_recv: posix.msghdr = undefined,
-    msg_send: posix.msghdr_const = undefined,
+    msg_recv: linux.msghdr = undefined,
+    msg_send: linux.msghdr_const = undefined,
 };
 
 const Self = @This();
@@ -165,7 +165,7 @@ pub fn processCancellations(
     _ = try self.ring.submit();
 }
 
-pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !void {
+pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
     const linux_os = @import("../os/linux.zig");
 
     // Flush SQ to get number of pending submissions
@@ -194,8 +194,7 @@ pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !void {
         if (flags & linux.IORING_ENTER_EXT_ARG != 0) &arg else null,
         @sizeOf(linux_os.io_uring_getevents_arg),
     ) catch |err| switch (err) {
-        error.SignalInterrupt => return,
-        error.SystemResources => return,
+        error.SignalInterrupt => return true, // Interrupted, treat as timeout
         else => return err,
     };
     _ = submitted;
@@ -203,6 +202,10 @@ pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !void {
     // Process all available completions
     var cqes: [256]linux.io_uring_cqe = undefined;
     const count = try self.ring.copy_cqes(&cqes, 0);
+
+    if (count == 0) {
+        return true; // Timed out
+    }
 
     for (cqes[0..count]) |cqe| {
         // Skip internal wake-up operation (user_data == 0)
@@ -242,6 +245,8 @@ pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !void {
         // Mark as completed, which invokes the callback
         state.markCompleted(completion);
     }
+
+    return false; // Did not timeout, woke up due to events
 }
 
 fn startCompletion(self: *Self, c: *Completion) !enum { completed, running } {
@@ -506,7 +511,7 @@ fn errnoToShutdownError(err: i32) socket.ShutdownError {
     return switch (errno_val) {
         .NOTCONN => error.NotConnected,
         .NOTSOCK => error.NotSocket,
-        else => posix.unexpectedErrno(errno_val) catch error.Unexpected,
+        else => posix_os.unexpectedErrno(errno_val) catch error.Unexpected,
     };
 }
 
@@ -532,7 +537,7 @@ const AsyncImpl = struct {
 
     fn init(self: *AsyncImpl, ring: *linux.IoUring) !void {
         // Create an eventfd for wake-up notifications
-        const efd = try linux_os.eventfd(0, linux_os.EFD.CLOEXEC | linux_os.EFD.NONBLOCK);
+        const efd = try posix_os.eventfd(0, posix_os.EFD.CLOEXEC | posix_os.EFD.NONBLOCK);
         errdefer _ = linux.close(efd);
 
         self.* = .{
@@ -551,12 +556,12 @@ const AsyncImpl = struct {
 
     fn notify(self: *AsyncImpl) void {
         // Write to eventfd to wake up the POLL operation
-        linux_os.eventfd_write(self.eventfd, 1) catch {};
+        posix_os.eventfd_write(self.eventfd, 1) catch {};
     }
 
     pub fn drain(self: *AsyncImpl) void {
         // Read and clear the eventfd counter
-        _ = linux_os.eventfd_read(self.eventfd) catch {};
+        _ = posix_os.eventfd_read(self.eventfd) catch {};
 
         // Re-submit the POLL_ADD operation for next wake-up
         self.rearm() catch {};

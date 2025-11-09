@@ -324,11 +324,6 @@ pub const Loop = struct {
     }
 
     pub fn processAsyncHandles(self: *Loop) void {
-        // Drain the async_impl wakeup fd if it was triggered
-        if (self.backend.async_impl) |*impl| {
-            impl.drain();
-        }
-
         // Check all async handles for pending notifications
         var c = self.state.async_handles.head;
         while (c) |completion| {
@@ -397,13 +392,15 @@ pub const Loop = struct {
         // Process cancellations through backend
         try self.backend.processCancellations(&self.state, &cancels);
 
-        try self.backend.tick(&self.state, timeout_ms);
+        const timed_out = try self.backend.tick(&self.state, timeout_ms);
 
         // Process any work completions from thread pool
         self.processWorkCompletions();
 
-        // Check timers again, to trigger the one that set timeout for the tick
-        _ = self.checkTimers();
+        // Only check timers again if we timed out (avoids syscall when woken by I/O)
+        if (timed_out) {
+            _ = self.checkTimers();
+        }
     }
 };
 

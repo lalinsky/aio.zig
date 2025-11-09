@@ -26,7 +26,11 @@ test "File: open/close" {
     try std.testing.expectEqual(true, file_open.c.has_result);
 
     const fd = try file_open.getResult();
-    try std.testing.expect(fd > 0);
+    if (builtin.os.tag == .windows) {
+        try std.testing.expect(fd != std.os.windows.INVALID_HANDLE_VALUE);
+    } else {
+        try std.testing.expect(fd > 0);
+    }
 
     var file_close = FileClose.init(fd);
     loop.add(&file_close.c);

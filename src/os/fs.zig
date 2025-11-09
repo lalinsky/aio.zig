@@ -81,8 +81,50 @@ pub const FileWriteError = error{
 /// Open a file using openat() syscall
 pub fn openat(allocator: std.mem.Allocator, dir: fd_t, path: []const u8, mode: mode_t, flags: FileOpenFlags) FileOpenError!fd_t {
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation
-        return error.Unexpected;
+        const w = std.os.windows;
+
+        // Allocate buffer for UTF-16 conversion
+        const path_w = allocator.allocSentinel(u16, path.len, 0) catch return error.SystemResources;
+        defer allocator.free(path_w);
+
+        const len = std.unicode.utf8ToUtf16Le(path_w, path) catch return error.InvalidUtf8;
+        path_w[len] = 0;
+
+        const access_mask: w.DWORD = w.GENERIC_READ | w.GENERIC_WRITE;
+        const creation: w.DWORD = if (flags.create)
+            if (flags.exclusive)
+                w.CREATE_NEW
+            else if (flags.truncate)
+                w.CREATE_ALWAYS
+            else
+                w.OPEN_ALWAYS
+        else if (flags.truncate)
+            w.TRUNCATE_EXISTING
+        else
+            w.OPEN_EXISTING;
+
+        const handle = w.kernel32.CreateFileW(
+            path_w.ptr,
+            access_mask,
+            w.FILE_SHARE_READ | w.FILE_SHARE_WRITE | w.FILE_SHARE_DELETE,
+            null,
+            creation,
+            w.FILE_ATTRIBUTE_NORMAL,
+            null,
+        );
+
+        if (handle == w.INVALID_HANDLE_VALUE) {
+            return switch (w.kernel32.GetLastError()) {
+                .FILE_NOT_FOUND => error.FileNotFound,
+                .PATH_NOT_FOUND => error.FileNotFound,
+                .ACCESS_DENIED => error.AccessDenied,
+                .ALREADY_EXISTS => error.PathAlreadyExists,
+                .FILE_EXISTS => error.PathAlreadyExists,
+                else => error.Unexpected,
+            };
+        }
+
+        return handle;
     }
 
     var open_flags: posix.system.O = .{
@@ -123,7 +165,8 @@ pub fn openat(allocator: std.mem.Allocator, dir: fd_t, path: []const u8, mode: m
 /// Close a file descriptor
 pub fn close(fd: fd_t) error{}!void {
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation
+        const w = std.os.windows;
+        _ = w.CloseHandle(fd);
         return;
     }
 
@@ -135,8 +178,36 @@ pub fn close(fd: fd_t) error{}!void {
 /// Read from file at offset using preadv()
 pub fn preadv(fd: fd_t, buffers: []iovec, offset: u64) FileReadError!usize {
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation
-        return error.Unexpected;
+        const w = std.os.windows;
+
+        var total_read: usize = 0;
+        for (buffers) |buffer| {
+            var bytes_read: w.DWORD = undefined;
+            var overlapped: w.OVERLAPPED = std.mem.zeroes(w.OVERLAPPED);
+            overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.Offset = @truncate(offset + total_read);
+            overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.OffsetHigh = @truncate((offset + total_read) >> 32);
+
+            const success = w.kernel32.ReadFile(
+                fd,
+                buffer.buf,
+                @intCast(buffer.len),
+                &bytes_read,
+                &overlapped,
+            );
+
+            if (success == w.FALSE) {
+                return switch (w.kernel32.GetLastError()) {
+                    .HANDLE_EOF => if (total_read == 0) return 0 else return total_read,
+                    .BROKEN_PIPE => error.BrokenPipe,
+                    else => error.Unexpected,
+                };
+            }
+
+            total_read += bytes_read;
+            if (bytes_read < buffer.len) break;
+        }
+
+        return total_read;
     }
 
     const rc = posix.system.preadv(fd, buffers.ptr, @intCast(buffers.len), @intCast(offset));
@@ -160,8 +231,36 @@ pub fn preadv(fd: fd_t, buffers: []iovec, offset: u64) FileReadError!usize {
 /// Write to file at offset using pwritev()
 pub fn pwritev(fd: fd_t, buffers: []const iovec_const, offset: u64) FileWriteError!usize {
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation
-        return error.Unexpected;
+        const w = std.os.windows;
+
+        var total_written: usize = 0;
+        for (buffers) |buffer| {
+            var bytes_written: w.DWORD = undefined;
+            var overlapped: w.OVERLAPPED = std.mem.zeroes(w.OVERLAPPED);
+            overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.Offset = @truncate(offset + total_written);
+            overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.OffsetHigh = @truncate((offset + total_written) >> 32);
+
+            const success = w.kernel32.WriteFile(
+                fd,
+                buffer.buf,
+                @intCast(buffer.len),
+                &bytes_written,
+                &overlapped,
+            );
+
+            if (success == w.FALSE) {
+                return switch (w.kernel32.GetLastError()) {
+                    .BROKEN_PIPE => error.BrokenPipe,
+                    .DISK_FULL => error.NoSpaceLeft,
+                    else => error.Unexpected,
+                };
+            }
+
+            total_written += bytes_written;
+            if (bytes_written < buffer.len) break;
+        }
+
+        return total_written;
     }
 
     const rc = posix.system.pwritev(fd, buffers.ptr, @intCast(buffers.len), @intCast(offset));

@@ -16,8 +16,19 @@ pub fn fileOpenWork(loop: *Loop, work: *Work) void {
 
     // Platform-specific file open
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation using CreateFile
-        file_open.c.setError(error.Unexpected);
+        const result = fs.openat(
+            file_open.internal.allocator,
+            file_open.dir,
+            file_open.path,
+            file_open.mode,
+            file_open.flags,
+        );
+
+        if (result) |fd| {
+            file_open.c.setResult(.file_open, fd);
+        } else |err| {
+            file_open.c.setError(err);
+        }
     } else {
         // POSIX implementation
         const result = fs.openat(
@@ -44,8 +55,13 @@ pub fn fileCloseWork(loop: *Loop, work: *Work) void {
 
     // Platform-specific file close
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation using CloseHandle
-        file_close.c.setError(error.Unexpected);
+        const result = fs.close(file_close.handle);
+
+        if (result) {
+            file_close.c.setResult(.file_close, {});
+        } else |err| {
+            file_close.c.setError(err);
+        }
     } else {
         // POSIX implementation
         const result = fs.close(file_close.handle);
@@ -66,8 +82,17 @@ pub fn fileReadWork(loop: *Loop, work: *Work) void {
 
     // Platform-specific file read
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation using ReadFile
-        file_read.c.setError(error.Unexpected);
+        const result = fs.preadv(
+            file_read.handle,
+            file_read.buffers,
+            file_read.offset,
+        );
+
+        if (result) |bytes_read| {
+            file_read.c.setResult(.file_read, bytes_read);
+        } else |err| {
+            file_read.c.setError(err);
+        }
     } else {
         // POSIX implementation using positional read
         const result = fs.preadv(
@@ -92,8 +117,17 @@ pub fn fileWriteWork(loop: *Loop, work: *Work) void {
 
     // Platform-specific file write
     if (builtin.os.tag == .windows) {
-        // TODO: Windows implementation using WriteFile
-        file_write.c.setError(error.Unexpected);
+        const result = fs.pwritev(
+            file_write.handle,
+            file_write.buffers,
+            file_write.offset,
+        );
+
+        if (result) |bytes_written| {
+            file_write.c.setResult(.file_write, bytes_written);
+        } else |err| {
+            file_write.c.setError(err);
+        }
     } else {
         // POSIX implementation using positional write
         const result = fs.pwritev(

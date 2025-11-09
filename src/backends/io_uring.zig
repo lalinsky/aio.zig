@@ -63,7 +63,7 @@ const log = std.log.scoped(.zio_uring);
 
 allocator: std.mem.Allocator,
 ring: linux.IoUring,
-async_impl: ?AsyncImpl = null,
+waker: Waker,
 
 pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
     // Initialize io_uring with 256 entries
@@ -80,25 +80,20 @@ pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
     self.* = .{
         .allocator = allocator,
         .ring = ring,
+        .waker = undefined,
     };
 
     // Initialize async notification mechanism
-    var async_impl: AsyncImpl = undefined;
-    try async_impl.init(&self.ring);
-    self.async_impl = async_impl;
+    try self.waker.init(&self.ring);
 }
 
 pub fn deinit(self: *Self) void {
-    if (self.async_impl) |*impl| {
-        impl.deinit();
-    }
+    self.waker.deinit();
     self.ring.deinit();
 }
 
 pub fn wake(self: *Self) void {
-    if (self.async_impl) |*impl| {
-        impl.notify();
-    }
+    self.waker.notify();
 }
 
 pub fn processSubmissions(
@@ -180,6 +175,9 @@ pub fn processCancellations(
 pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
     const linux_os = @import("../os/linux.zig");
 
+    // Re-arm waker if needed (after drain() in previous tick)
+    try self.waker.rearm();
+
     // Flush SQ to get number of pending submissions
     const to_submit = self.ring.flush_sq();
 
@@ -223,10 +221,8 @@ pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
         // Skip internal wake-up operation (user_data == 0)
         if (cqe.user_data == 0) {
             // Wake-up POLL_ADD completion
-            if (self.async_impl) |*impl| {
-                impl.drain();
-                state.loop.processAsyncHandles();
-            }
+            self.waker.drain();
+            state.loop.processAsyncHandles();
             continue;
         }
 
@@ -530,13 +526,14 @@ fn sendFlagsToMsg(flags: socket.SendFlags) u32 {
 }
 
 // Async notification mechanism using eventfd with POLL_ADD
-const AsyncImpl = struct {
+const Waker = struct {
     const linux_os = @import("../os/linux.zig");
 
     ring: *linux.IoUring,
     eventfd: i32,
+    needs_rearm: bool,
 
-    fn init(self: *AsyncImpl, ring: *linux.IoUring) !void {
+    fn init(self: *Waker, ring: *linux.IoUring) !void {
         // Create an eventfd for wake-up notifications
         const efd = try posix_os.eventfd(0, posix_os.EFD.CLOEXEC | posix_os.EFD.NONBLOCK);
         errdefer _ = linux.close(efd);
@@ -544,34 +541,35 @@ const AsyncImpl = struct {
         self.* = .{
             .ring = ring,
             .eventfd = efd,
+            .needs_rearm = true, // Arm on first tick
         };
-
-        // Submit a POLL_ADD operation to wait for the eventfd
-        // This stays pending until the eventfd is triggered
-        try self.rearm();
     }
 
-    fn deinit(self: *AsyncImpl) void {
+    fn deinit(self: *Waker) void {
         _ = linux.close(self.eventfd);
     }
 
-    fn notify(self: *AsyncImpl) void {
+    fn notify(self: *Waker) void {
         // Write to eventfd to wake up the POLL operation
         posix_os.eventfd_write(self.eventfd, 1) catch {};
     }
 
-    pub fn drain(self: *AsyncImpl) void {
+    fn drain(self: *Waker) void {
         // Read and clear the eventfd counter
         _ = posix_os.eventfd_read(self.eventfd) catch {};
 
-        // Re-submit the POLL_ADD operation for next wake-up
-        self.rearm() catch {};
+        // Mark that we need to re-arm the POLL_ADD for next wake-up
+        // This will be done in tick() before io_uring_enter2
+        self.needs_rearm = true;
     }
 
-    fn rearm(self: *AsyncImpl) !void {
+    fn rearm(self: *Waker) !void {
+        if (!self.needs_rearm) return;
+
         const sqe = try self.ring.get_sqe();
         sqe.prep_poll_add(self.eventfd, linux.POLL.IN);
         sqe.user_data = 0; // Special marker for wake-up events
-        _ = try self.ring.submit();
+
+        self.needs_rearm = false;
     }
 };

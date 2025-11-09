@@ -524,7 +524,7 @@ pub const FileOpen = struct {
 
     pub const Error = fs.FileOpenError || Cancelable;
 
-    pub fn init(dir: fs.fd_t, path: []const u8, mode: u32, flags: fs.FileOpenFlags) FileOpen {
+    pub fn init(dir: fs.fd_t, path: []const u8, mode: fs.mode_t, flags: fs.FileOpenFlags) FileOpen {
         return .{
             .c = .init(.file_open),
             .dir = dir,

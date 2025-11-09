@@ -139,7 +139,7 @@ pub fn preadv(fd: fd_t, buffers: []iovec, offset: u64) FileReadError!usize {
         return error.Unexpected;
     }
 
-    const rc = posix.system.preadv(fd, buffers.ptr, buffers.len, @intCast(offset));
+    const rc = posix.system.preadv(fd, buffers.ptr, @intCast(buffers.len), @intCast(offset));
     return switch (posix.errno(rc)) {
         .SUCCESS => @intCast(rc),
         .ACCES => error.AccessDenied,
@@ -164,7 +164,7 @@ pub fn pwritev(fd: fd_t, buffers: []const iovec_const, offset: u64) FileWriteErr
         return error.Unexpected;
     }
 
-    const rc = posix.system.pwritev(fd, buffers.ptr, buffers.len, @intCast(offset));
+    const rc = posix.system.pwritev(fd, buffers.ptr, @intCast(buffers.len), @intCast(offset));
     return switch (posix.errno(rc)) {
         .SUCCESS => @intCast(rc),
         .ACCES => error.AccessDenied,

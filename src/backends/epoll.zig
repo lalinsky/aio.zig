@@ -455,13 +455,11 @@ pub fn checkCompletion(c: *Completion, event: *const std.os.linux.epoll_event) C
 
 /// Async notification implementation using eventfd
 pub const AsyncImpl = struct {
-    const eventfd = @import("../os/eventfd.zig");
-
     eventfd_fd: i32 = -1,
     epoll_fd: i32,
 
     pub fn init(self: *AsyncImpl, epoll_fd: i32) !void {
-        const efd = try eventfd.eventfd(0, eventfd.EFD.CLOEXEC | eventfd.EFD.NONBLOCK);
+        const efd = try posix.eventfd(0, posix.EFD.CLOEXEC | posix.EFD.NONBLOCK);
         errdefer _ = std.os.linux.close(efd);
 
         // Register eventfd with epoll
@@ -491,14 +489,14 @@ pub const AsyncImpl = struct {
 
     /// Notify the event loop (thread-safe)
     pub fn notify(self: *AsyncImpl) void {
-        eventfd.eventfd_write(self.eventfd_fd, 1) catch |err| {
+        posix.eventfd_write(self.eventfd_fd, 1) catch |err| {
             log.err("Failed to write to eventfd: {}", .{err});
         };
     }
 
     /// Drain the eventfd counter (called by event loop when EPOLLIN is ready)
     pub fn drain(self: *AsyncImpl) void {
-        _ = eventfd.eventfd_read(self.eventfd_fd) catch |err| {
+        _ = posix.eventfd_read(self.eventfd_fd) catch |err| {
             log.err("Failed to read from eventfd: {}", .{err});
         };
     }

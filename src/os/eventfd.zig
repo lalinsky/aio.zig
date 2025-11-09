@@ -16,17 +16,16 @@ pub const EFD = switch (builtin.os.tag) {
         pub const CLOEXEC = 1 << @bitOffsetOf(std.c.O, "CLOEXEC");
         pub const NONBLOCK = 1 << @bitOffsetOf(std.c.O, "NONBLOCK");
     },
-    else => @compileError("Unsupported OS"),
+    else => {},
 };
 
 const c = switch (builtin.os.tag) {
-    .linux => {},
     .freebsd, .netbsd => struct {
         extern "c" fn eventfd(initval: c_uint, flags: c_int) c_int;
         extern "c" fn eventfd_read(fd: c_int, value: *c_ulonglong) c_int;
         extern "c" fn eventfd_write(fd: c_int, value: c_ulonglong) c_int;
     },
-    else => @compileError("Unsupported OS"),
+    else => {},
 };
 
 /// Create an eventfd for async notifications.
@@ -64,7 +63,7 @@ pub fn eventfd(initval: u32, flags: u32) !i32 {
                 }
             }
         },
-        else => @compileError("Unsupported OS"),
+        else => @panic("Unsupported OS"),
     }
 }
 
@@ -87,7 +86,7 @@ pub fn eventfd_read(fd: i32) !u64 {
                 }
             }
         },
-        else => {
+        .freebsd, .netbsd => {
             while (true) {
                 const rc = c.eventfd_read(fd, &value);
                 switch (posix.errno(rc)) {
@@ -98,6 +97,7 @@ pub fn eventfd_read(fd: i32) !u64 {
                 }
             }
         },
+        else => @panic("Unsupported OS"),
     }
 }
 
@@ -119,7 +119,7 @@ pub fn eventfd_write(fd: i32, value: u64) !void {
                 }
             }
         },
-        else => {
+        .freebsd, .netbsd => {
             while (true) {
                 const rc = c.eventfd_write(fd, value);
                 switch (posix.errno(rc)) {
@@ -130,6 +130,7 @@ pub fn eventfd_write(fd: i32, value: u64) !void {
                 }
             }
         },
+        else => @panic("Unsupported OS"),
     }
 }
 

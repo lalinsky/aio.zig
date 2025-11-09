@@ -202,7 +202,7 @@ pub const Work = struct {
     pub const WorkFn = fn (loop: *Loop, work: *Work) void;
 
     pub fn init(func: *const WorkFn, userdata: ?*anyopaque) Work {
-        return Work{
+        return .{
             .c = .init(.work),
             .func = func,
             .userdata = userdata,

@@ -43,6 +43,7 @@ pub fn EchoServer(comptime domain: socket.Domain, comptime sockaddr: type) type 
         recv_iov: [1]socket.iovec = undefined,
         send_iov: [1]socket.iovec_const = undefined,
         bytes_received: usize = 0,
+        bytes_sent: usize = 0,
 
         pub const State = enum {
             init,
@@ -193,6 +194,7 @@ pub fn EchoServer(comptime domain: socket.Domain, comptime sockaddr: type) type 
             };
 
             self.state = .sending;
+            self.bytes_sent = 0;
             const send_buf = self.recv_buf[0..self.bytes_received];
             self.send_iov = [_]socket.iovec_const{socket.iovecConstFromSlice(send_buf)};
             self.comp = .{ .send = NetSend.init(self.client_sock.?, &self.send_iov, .{}) };
@@ -204,11 +206,25 @@ pub fn EchoServer(comptime domain: socket.Domain, comptime sockaddr: type) type 
         fn sendCallback(loop: *Loop, c: *Completion) void {
             const self: *Self = @ptrCast(@alignCast(c.userdata.?));
 
-            _ = self.comp.send.getResult() catch {
+            const bytes_written = self.comp.send.getResult() catch {
                 self.state = .failed;
                 loop.stop();
                 return;
             };
+
+            self.bytes_sent += bytes_written;
+
+            // Check if we've sent everything
+            if (self.bytes_sent < self.bytes_received) {
+                // Partial write - continue sending remaining data
+                const remaining = self.recv_buf[self.bytes_sent..self.bytes_received];
+                self.send_iov = [_]socket.iovec_const{socket.iovecConstFromSlice(remaining)};
+                self.comp = .{ .send = NetSend.init(self.client_sock.?, &self.send_iov, .{}) };
+                self.comp.send.c.callback = sendCallback;
+                self.comp.send.c.userdata = self;
+                loop.add(&self.comp.send.c);
+                return;
+            }
 
             self.state = .closing_client;
             self.comp = .{ .close_client = NetClose.init(self.client_sock.?) };

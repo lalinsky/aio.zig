@@ -23,6 +23,7 @@ pub fn EchoServer(comptime domain: socket.Domain, comptime sockaddr: type) type 
         // Server socket
         server_sock: Backend.NetHandle = undefined,
         server_addr: sockaddr,
+        server_addr_len: socket.socklen_t,
 
         // Client socket
         client_sock: ?Backend.NetHandle = null,
@@ -66,6 +67,7 @@ pub fn EchoServer(comptime domain: socket.Domain, comptime sockaddr: type) type 
             var self: Self = .{
                 .loop = loop,
                 .server_addr = undefined,
+                .server_addr_len = @sizeOf(sockaddr),
                 .comp = undefined,
             };
 
@@ -122,7 +124,7 @@ pub fn EchoServer(comptime domain: socket.Domain, comptime sockaddr: type) type 
             self.comp = .{ .bind = NetBind.init(
                 self.server_sock,
                 @ptrCast(&self.server_addr),
-                @sizeOf(sockaddr),
+                &self.server_addr_len,
             ) };
             self.comp.bind.c.callback = bindCallback;
             self.comp.bind.c.userdata = self;
@@ -133,13 +135,6 @@ pub fn EchoServer(comptime domain: socket.Domain, comptime sockaddr: type) type 
             const self: *Self = @ptrCast(@alignCast(c.userdata.?));
 
             self.comp.bind.c.getResult(.net_bind) catch {
-                self.state = .failed;
-                loop.stop();
-                return;
-            };
-
-            var addr_len: socket.socklen_t = @sizeOf(sockaddr);
-            socket.getsockname(self.server_sock, @ptrCast(&self.server_addr), &addr_len) catch {
                 self.state = .failed;
                 loop.stop();
                 return;

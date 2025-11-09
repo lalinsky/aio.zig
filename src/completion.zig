@@ -199,16 +199,14 @@ pub const Work = struct {
         canceled,
     };
 
-    pub const WorkFn = fn (loop: *Loop, completion: *Completion) void;
+    pub const WorkFn = fn (loop: *Loop, work: *Work) void;
 
     pub fn init(func: *const WorkFn, userdata: ?*anyopaque) Work {
-        var work = Work{
+        return Work{
             .c = .init(.work),
             .func = func,
             .userdata = userdata,
         };
-        work.c.userdata = userdata;
-        return work;
     }
 };
 

@@ -411,6 +411,8 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
             };
 
             self.state = .receiving;
+            self.bytes_received = 0;
+            // Start reading into the beginning of recv_buf
             self.recv_iov = [_]socket.iovec{socket.iovecFromSlice(&self.recv_buf)};
             self.comp = .{ .recv = NetRecv.init(self.client_sock, &self.recv_iov, .{}) };
             self.comp.recv.c.callback = recvCallback;
@@ -421,17 +423,33 @@ pub fn EchoClient(comptime domain: socket.Domain, comptime sockaddr: type) type 
         fn recvCallback(loop: *Loop, c: *Completion) void {
             const self: *Self = @ptrCast(@alignCast(c.userdata.?));
 
-            self.bytes_received = self.comp.recv.getResult() catch {
+            const bytes_read = self.comp.recv.getResult() catch {
                 self.state = .failed;
                 loop.stop();
                 return;
             };
 
-            self.state = .closing;
-            self.comp = .{ .close = NetClose.init(self.client_sock) };
-            self.comp.close.c.callback = closeCallback;
-            self.comp.close.c.userdata = self;
-            loop.add(&self.comp.close.c);
+            // Check for EOF (0 bytes received)
+            if (bytes_read == 0) {
+                self.state = .closing;
+                self.comp = .{ .close = NetClose.init(self.client_sock) };
+                self.comp.close.c.callback = closeCallback;
+                self.comp.close.c.userdata = self;
+                loop.add(&self.comp.close.c);
+                return;
+            }
+
+            // Accumulate bytes received
+            self.bytes_received += bytes_read;
+
+            // Continue reading - re-arm NetRecv to drain the full echo
+            // Read into the buffer starting after what we've already received
+            const remaining_buf = self.recv_buf[self.bytes_received..];
+            self.recv_iov = [_]socket.iovec{socket.iovecFromSlice(remaining_buf)};
+            self.comp = .{ .recv = NetRecv.init(self.client_sock, &self.recv_iov, .{}) };
+            self.comp.recv.c.callback = recvCallback;
+            self.comp.recv.c.userdata = self;
+            loop.add(&self.comp.recv.c);
         }
 
         fn closeCallback(loop: *Loop, c: *Completion) void {

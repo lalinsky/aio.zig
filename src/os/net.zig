@@ -143,8 +143,11 @@ pub const ShutdownHow = enum {
 };
 
 pub const ShutdownError = error{
-    NotConnected,
-    NotSocket,
+    SocketNotConnected,
+    FileDescriptorNotASocket,
+    ConnectionAborted,
+    ConnectionResetByPeer,
+    NetworkDown,
     Canceled,
     Unexpected,
 };
@@ -283,15 +286,55 @@ pub const BindError = error{
     AddressInUse,
     AddressNotAvailable,
     AddressFamilyNotSupported,
-    PermissionDenied,
+    AccessDenied,
+    FileDescriptorNotASocket,
     SymLinkLoop,
     NameTooLong,
     FileNotFound,
     NotDir,
     ReadOnlyFileSystem,
+    NetworkDown,
+    InputOutput,
     SystemResources,
     Unexpected,
 };
+
+pub fn errnoToBindError(err: E) BindError {
+    switch (builtin.os.tag) {
+        .windows => {
+            return switch (err) {
+                .WSAEADDRINUSE => error.AddressInUse,
+                .WSAEADDRNOTAVAIL => error.AddressNotAvailable,
+                .WSAEAFNOSUPPORT => error.AddressFamilyNotSupported,
+                .WSAEACCES => error.AccessDenied,
+                .WSAENOTSOCK => error.FileDescriptorNotASocket,
+                .WSAENETDOWN => error.NetworkDown,
+                .WSAENOBUFS => error.SystemResources,
+                else => unexpectedWSAError(err),
+            };
+        },
+        else => {
+            return switch (err) {
+                .SUCCESS => unreachable,
+                .ACCES, .PERM => error.AccessDenied,
+                .ADDRINUSE => error.AddressInUse,
+                .NOTSOCK => error.FileDescriptorNotASocket,
+                .AFNOSUPPORT => error.AddressFamilyNotSupported,
+                .ADDRNOTAVAIL => error.AddressNotAvailable,
+                .LOOP => error.SymLinkLoop,
+                .NAMETOOLONG => error.NameTooLong,
+                .NOENT => error.FileNotFound,
+                .NOMEM => error.SystemResources,
+                .AGAIN => error.SystemResources, // Kernel resources temporarily unavailable (FreeBSD)
+                .NOTDIR => error.NotDir,
+                .ROFS => error.ReadOnlyFileSystem,
+                .IO => error.InputOutput,
+                .NETDOWN => error.NetworkDown,
+                else => |e| posix.unexpectedErrno(e),
+            };
+        },
+    }
+}
 
 pub fn bind(fd: fd_t, addr: *const sockaddr, addr_len: socklen_t) BindError!void {
     switch (builtin.os.tag) {
@@ -299,13 +342,7 @@ pub fn bind(fd: fd_t, addr: *const sockaddr, addr_len: socklen_t) BindError!void
             const rc = std.os.windows.ws2_32.bind(fd, @ptrCast(addr), @intCast(addr_len));
             if (rc == std.os.windows.ws2_32.SOCKET_ERROR) {
                 const err = std.os.windows.ws2_32.WSAGetLastError();
-                return switch (err) {
-                    .WSAEADDRINUSE => error.AddressInUse,
-                    .WSAEADDRNOTAVAIL => error.AddressNotAvailable,
-                    .WSAEAFNOSUPPORT => error.AddressFamilyNotSupported,
-                    .WSAEACCES => error.PermissionDenied,
-                    else => unexpectedWSAError(err),
-                };
+                return errnoToBindError(err);
             }
         },
         else => {
@@ -314,21 +351,7 @@ pub fn bind(fd: fd_t, addr: *const sockaddr, addr_len: socklen_t) BindError!void
                 switch (posix.errno(rc)) {
                     .SUCCESS => return,
                     .INTR => continue,
-                    .ACCES, .PERM => return error.PermissionDenied,
-                    .ADDRINUSE => return error.AddressInUse,
-                    .BADF => unreachable, // sockfd is not a valid file descriptor - would be a bug
-                    .INVAL => unreachable, // Socket already bound or invalid addrlen - would be a bug
-                    .NOTSOCK => unreachable, // sockfd doesn't refer to a socket - would be a bug
-                    .AFNOSUPPORT => return error.AddressFamilyNotSupported,
-                    .ADDRNOTAVAIL => return error.AddressNotAvailable,
-                    .FAULT => unreachable, // addr points outside accessible address space - would be a bug
-                    .LOOP => return error.SymLinkLoop,
-                    .NAMETOOLONG => return error.NameTooLong,
-                    .NOENT => return error.FileNotFound,
-                    .NOMEM => return error.SystemResources,
-                    .NOTDIR => return error.NotDir,
-                    .ROFS => return error.ReadOnlyFileSystem,
-                    else => |err| return posix.unexpectedErrno(err),
+                    else => |err| return errnoToBindError(err),
                 }
             }
         },
@@ -337,9 +360,39 @@ pub fn bind(fd: fd_t, addr: *const sockaddr, addr_len: socklen_t) BindError!void
 
 pub const ListenError = error{
     AddressInUse,
+    AlreadyConnected,
     OperationNotSupported,
+    FileDescriptorNotASocket,
+    NetworkDown,
+    SystemResources,
     Unexpected,
 };
+
+pub fn errnoToListenError(err: E) ListenError {
+    switch (builtin.os.tag) {
+        .windows => {
+            return switch (err) {
+                .WSAEADDRINUSE => error.AddressInUse,
+                .WSAEISCONN => error.AlreadyConnected,
+                .WSAEOPNOTSUPP => error.OperationNotSupported,
+                .WSAENOTSOCK => error.FileDescriptorNotASocket,
+                .WSAENETDOWN => error.NetworkDown,
+                .WSAENOBUFS, .WSAEMFILE => error.SystemResources,
+                else => unexpectedWSAError(err),
+            };
+        },
+        else => {
+            return switch (err) {
+                .SUCCESS => unreachable,
+                .ADDRINUSE => error.AddressInUse,
+                .OPNOTSUPP => error.OperationNotSupported,
+                .NOTSOCK => error.FileDescriptorNotASocket,
+                .NETDOWN => error.NetworkDown,
+                else => |e| posix.unexpectedErrno(e),
+            };
+        },
+    }
+}
 
 pub fn listen(fd: fd_t, backlog: u31) ListenError!void {
     switch (builtin.os.tag) {
@@ -347,11 +400,7 @@ pub fn listen(fd: fd_t, backlog: u31) ListenError!void {
             const rc = std.os.windows.ws2_32.listen(fd, backlog);
             if (rc == std.os.windows.ws2_32.SOCKET_ERROR) {
                 const err = std.os.windows.ws2_32.WSAGetLastError();
-                return switch (err) {
-                    .WSAEADDRINUSE => error.AddressInUse,
-                    .WSAEOPNOTSUPP => error.OperationNotSupported,
-                    else => unexpectedWSAError(err),
-                };
+                return errnoToListenError(err);
             }
         },
         else => {
@@ -360,11 +409,7 @@ pub fn listen(fd: fd_t, backlog: u31) ListenError!void {
                 switch (posix.errno(rc)) {
                     .SUCCESS => return,
                     .INTR => continue,
-                    .ADDRINUSE => return error.AddressInUse,
-                    .BADF => unreachable, // sockfd is not a valid file descriptor - would be a bug
-                    .NOTSOCK => unreachable, // sockfd doesn't refer to a socket - would be a bug
-                    .OPNOTSUPP => return error.OperationNotSupported,
-                    else => |err| return posix.unexpectedErrno(err),
+                    else => |err| return errnoToListenError(err),
                 }
             }
         },
@@ -380,9 +425,16 @@ pub const ConnectError = error{
     AlreadyConnected,
     ConnectionPending,
     ConnectionRefused,
-    FileNotFound,
-    PermissionDenied,
+    ConnectionResetByPeer,
+    ConnectionTimedOut,
     NetworkUnreachable,
+    FileDescriptorNotASocket,
+    FileNotFound,
+    SymLinkLoop,
+    NameTooLong,
+    NotDir,
+    NetworkDown,
+    SystemResources,
     Canceled,
     Unexpected,
 };
@@ -412,12 +464,16 @@ pub fn connect(fd: fd_t, addr: *const sockaddr, addr_len: socklen_t) ConnectErro
 pub const AcceptError = error{
     WouldBlock,
     ConnectionAborted,
+    ConnectionResetByPeer,
     ProcessFdQuotaExceeded,
     SystemFdQuotaExceeded,
     SystemResources,
-    PermissionDenied,
+    FileDescriptorNotASocket,
+    SocketNotListening,
+    OperationNotSupported,
     ProtocolFailure,
     BlockedByFirewall,
+    NetworkDown,
     Canceled,
     Unexpected,
 };
@@ -545,6 +601,7 @@ pub fn errnoToConnectError(err: E) ConnectError {
         .windows => {
             return switch (err) {
                 .WSAECONNREFUSED => error.ConnectionRefused,
+                .WSAETIMEDOUT => error.ConnectionTimedOut,
                 .WSAEHOSTUNREACH, .WSAENETUNREACH => error.NetworkUnreachable,
                 .WSAEACCES => error.AccessDenied,
                 .WSAEADDRINUSE => error.AddressInUse,
@@ -553,6 +610,9 @@ pub fn errnoToConnectError(err: E) ConnectError {
                 .WSAEISCONN => error.AlreadyConnected,
                 .WSAEALREADY => error.ConnectionPending,
                 .WSAEWOULDBLOCK => error.WouldBlock,
+                .WSAENOTSOCK => error.FileDescriptorNotASocket,
+                .WSAENETDOWN => error.NetworkDown,
+                .WSAENOBUFS => error.SystemResources,
                 .WSA_OPERATION_ABORTED => error.Canceled,
                 else => unexpectedWSAError(err),
             };
@@ -561,6 +621,8 @@ pub fn errnoToConnectError(err: E) ConnectError {
             return switch (err) {
                 .SUCCESS => unreachable,
                 .CONNREFUSED => error.ConnectionRefused,
+                .CONNRESET => error.ConnectionResetByPeer,
+                .TIMEDOUT => error.ConnectionTimedOut,
                 .HOSTUNREACH, .NETUNREACH => error.NetworkUnreachable,
                 .ACCES, .PERM => error.AccessDenied,
                 .ADDRINUSE => error.AddressInUse,
@@ -568,7 +630,12 @@ pub fn errnoToConnectError(err: E) ConnectError {
                 .AFNOSUPPORT => error.AddressFamilyNotSupported,
                 .ISCONN => error.AlreadyConnected,
                 .ALREADY, .INPROGRESS => error.ConnectionPending,
-                .AGAIN => error.WouldBlock,
+                .AGAIN => error.WouldBlock, // Also: insufficient routing cache or no auto-assigned ports
+                .NOTSOCK => error.FileDescriptorNotASocket,
+                .NOENT => error.FileNotFound,
+                .LOOP => error.SymLinkLoop,
+                .NAMETOOLONG => error.NameTooLong,
+                .NOTDIR => error.NotDir,
                 .CANCELED => error.Canceled,
                 else => |e| posix.unexpectedErrno(e),
             };
@@ -580,10 +647,16 @@ pub fn errnoToAcceptError(err: E) AcceptError {
     switch (builtin.os.tag) {
         .windows => {
             return switch (err) {
-                .WSAECONNABORTED => error.ConnectionAborted,
-                .WSAEACCES => error.PermissionDenied,
-                .WSAEPROTONOSUPPORT => error.ProtocolFailure,
                 .WSAEWOULDBLOCK => error.WouldBlock,
+                .WSAECONNABORTED => error.ConnectionAborted,
+                .WSAECONNRESET => error.ConnectionResetByPeer,
+                .WSAEMFILE => error.ProcessFdQuotaExceeded,
+                .WSAENOBUFS => error.SystemResources,
+                .WSAENOTSOCK => error.FileDescriptorNotASocket,
+                .WSAEINVAL => error.SocketNotListening,
+                .WSAEOPNOTSUPP => error.ProtocolFailure,
+                .WSAEPROTONOSUPPORT => error.ProtocolFailure,
+                .WSAENETDOWN => error.NetworkDown,
                 .WSA_OPERATION_ABORTED => error.Canceled,
                 else => unexpectedWSAError(err),
             };
@@ -591,10 +664,18 @@ pub fn errnoToAcceptError(err: E) AcceptError {
         else => {
             return switch (err) {
                 .SUCCESS => unreachable,
-                .CONNABORTED => error.ConnectionAborted,
-                .ACCES, .PERM => error.PermissionDenied,
-                .PROTO => error.ProtocolFailure,
                 .AGAIN => error.WouldBlock,
+                .CONNABORTED => error.ConnectionAborted,
+                .CONNRESET => error.ConnectionResetByPeer,
+                .MFILE => error.ProcessFdQuotaExceeded,
+                .NFILE => error.SystemFdQuotaExceeded,
+                .NOMEM, .NOBUFS => error.SystemResources,
+                .NOTSOCK => error.FileDescriptorNotASocket,
+                .INVAL => error.SocketNotListening,
+                .OPNOTSUPP => error.OperationNotSupported,
+                .PROTO => error.ProtocolFailure,
+                .PERM => error.BlockedByFirewall,
+                .NETDOWN => error.NetworkDown,
                 .CANCELED => error.Canceled,
                 else => |e| posix.unexpectedErrno(e),
             };
@@ -606,9 +687,17 @@ pub fn errnoToRecvError(err: E) RecvError {
     switch (builtin.os.tag) {
         .windows => {
             return switch (err) {
-                .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
-                .WSAECONNREFUSED => error.ConnectionRefused,
                 .WSAEWOULDBLOCK => error.WouldBlock,
+                .WSAECONNREFUSED => error.ConnectionRefused,
+                .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
+                .WSAECONNABORTED => error.ConnectionAborted,
+                .WSAETIMEDOUT => error.ConnectionTimedOut,
+                .WSAENOTCONN => error.SocketNotConnected,
+                .WSAENOTSOCK => error.FileDescriptorNotASocket,
+                .WSAESHUTDOWN => error.SocketShutdown,
+                .WSAEOPNOTSUPP => error.OperationNotSupported,
+                .WSAENETDOWN => error.NetworkDown,
+                .WSAENOBUFS, .WSAEINVAL => error.SystemResources,
                 .WSA_OPERATION_ABORTED => error.Canceled,
                 else => unexpectedWSAError(err),
             };
@@ -616,9 +705,12 @@ pub fn errnoToRecvError(err: E) RecvError {
         else => {
             return switch (err) {
                 .SUCCESS => unreachable,
-                .CONNRESET => error.ConnectionResetByPeer,
-                .CONNREFUSED => error.ConnectionRefused,
                 .AGAIN => error.WouldBlock,
+                .CONNREFUSED => error.ConnectionRefused,
+                .CONNRESET => error.ConnectionResetByPeer,
+                .NOTCONN => error.SocketNotConnected,
+                .NOTSOCK => error.FileDescriptorNotASocket,
+                .NOMEM => error.SystemResources,
                 .CANCELED => error.Canceled,
                 else => |e| posix.unexpectedErrno(e),
             };
@@ -630,11 +722,18 @@ pub fn errnoToSendError(err: E) SendError {
     switch (builtin.os.tag) {
         .windows => {
             return switch (err) {
-                .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
-                .WSAESHUTDOWN => error.BrokenPipe,
-                .WSAEACCES => error.AccessDenied,
-                .WSAEMSGSIZE => error.MessageTooBig,
                 .WSAEWOULDBLOCK => error.WouldBlock,
+                .WSAEACCES => error.AccessDenied,
+                .WSAECONNRESET, .WSAENETRESET => error.ConnectionResetByPeer,
+                .WSAECONNABORTED => error.ConnectionAborted,
+                .WSAETIMEDOUT => error.ConnectionTimedOut,
+                .WSAENOTCONN => error.SocketNotConnected,
+                .WSAENOTSOCK => error.FileDescriptorNotASocket,
+                .WSAEMSGSIZE => error.MessageTooBig,
+                .WSAESHUTDOWN => error.BrokenPipe,
+                .WSAEHOSTUNREACH, .WSAENETDOWN => error.NetworkUnreachable,
+                .WSAEOPNOTSUPP => error.OperationNotSupported,
+                .WSAENOBUFS => error.SystemResources,
                 .WSA_OPERATION_ABORTED => error.Canceled,
                 else => unexpectedWSAError(err),
             };
@@ -642,11 +741,15 @@ pub fn errnoToSendError(err: E) SendError {
         else => {
             return switch (err) {
                 .SUCCESS => unreachable,
-                .CONNRESET => error.ConnectionResetByPeer,
-                .PIPE => error.BrokenPipe,
-                .ACCES => error.AccessDenied,
-                .MSGSIZE => error.MessageTooBig,
                 .AGAIN => error.WouldBlock,
+                .ACCES => error.AccessDenied,
+                .CONNRESET => error.ConnectionResetByPeer,
+                .NOTCONN => error.SocketNotConnected,
+                .NOTSOCK => error.FileDescriptorNotASocket,
+                .MSGSIZE => error.MessageTooBig,
+                .PIPE => error.BrokenPipe,
+                .HOSTUNREACH, .HOSTDOWN, .NETDOWN => error.NetworkUnreachable,
+                .NOBUFS => error.SystemResources,
                 .CANCELED => error.Canceled,
                 else => |e| posix.unexpectedErrno(e),
             };
@@ -658,8 +761,11 @@ pub fn errnoToShutdownError(err: E) ShutdownError {
     switch (builtin.os.tag) {
         .windows => {
             return switch (err) {
-                .WSAENOTCONN => error.NotConnected,
-                .WSAENOTSOCK => error.NotSocket,
+                .WSAENOTCONN => error.SocketNotConnected,
+                .WSAENOTSOCK => error.FileDescriptorNotASocket,
+                .WSAECONNABORTED => error.ConnectionAborted,
+                .WSAECONNRESET => error.ConnectionResetByPeer,
+                .WSAENETDOWN => error.NetworkDown,
                 .WSA_OPERATION_ABORTED => error.Canceled,
                 else => unexpectedWSAError(err),
             };
@@ -667,8 +773,11 @@ pub fn errnoToShutdownError(err: E) ShutdownError {
         else => {
             return switch (err) {
                 .SUCCESS => unreachable,
-                .NOTCONN => error.NotConnected,
-                .NOTSOCK => error.NotSocket,
+                .NOTCONN => error.SocketNotConnected,
+                .NOTSOCK => error.FileDescriptorNotASocket,
+                .CONNABORTED => error.ConnectionAborted,
+                .CONNRESET => error.ConnectionResetByPeer,
+                .NETDOWN => error.NetworkDown,
                 .CANCELED => error.Canceled,
                 else => |e| posix.unexpectedErrno(e),
             };
@@ -713,6 +822,13 @@ pub const RecvError = error{
     WouldBlock,
     ConnectionRefused,
     ConnectionResetByPeer,
+    ConnectionAborted,
+    ConnectionTimedOut,
+    SocketNotConnected,
+    FileDescriptorNotASocket,
+    SocketShutdown,
+    OperationNotSupported,
+    NetworkDown,
     SystemResources,
     Canceled,
     Unexpected,
@@ -798,8 +914,15 @@ pub const SendError = error{
     WouldBlock,
     AccessDenied,
     ConnectionResetByPeer,
+    ConnectionAborted,
+    ConnectionTimedOut,
+    SocketNotConnected,
+    FileDescriptorNotASocket,
     MessageTooBig,
     BrokenPipe,
+    NetworkUnreachable,
+    NetworkDown,
+    OperationNotSupported,
     SystemResources,
     Canceled,
     Unexpected,

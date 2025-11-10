@@ -537,8 +537,9 @@ pub const Waker = struct {
         switch (posix.errno(rc)) {
             .SUCCESS => {},
             else => |err| {
+                // Log error but don't panic - the loop may not wake up immediately,
+                // but it will wake up on the next timeout or event.
                 log.err("Failed to trigger user kevent: {}", .{err});
-                @panic("TODO: handle error");
             },
         }
     }

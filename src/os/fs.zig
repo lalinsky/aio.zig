@@ -273,7 +273,7 @@ pub fn pwritev(fd: fd_t, buffers: []const iovec_const, offset: u64) FileWriteErr
 }
 
 /// Sync file data to disk
-pub fn fsync_file(fd: fd_t, flags: FileSyncFlags) FileSyncError!void {
+pub fn sync(fd: fd_t, flags: FileSyncFlags) FileSyncError!void {
     if (builtin.os.tag == .windows) {
         const w = std.os.windows;
 

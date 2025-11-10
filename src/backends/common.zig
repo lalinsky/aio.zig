@@ -110,7 +110,7 @@ pub fn handleFileWrite(c: *Completion) void {
 /// Helper to handle file sync operation
 pub fn handleFileSync(c: *Completion) void {
     const data = c.cast(FileSync);
-    if (fs.fsync_file(data.handle, data.flags)) |_| {
+    if (fs.sync(data.handle, data.flags)) |_| {
         c.setResult(.file_sync, {});
     } else |err| {
         c.setError(err);

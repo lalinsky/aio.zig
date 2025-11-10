@@ -93,17 +93,15 @@ pub const LoopState = struct {
 
         if (completion.canceled) |cancel| {
             std.debug.assert(!cancel.c.has_result);
-            if (!cancel.c.has_result) {
-                var set = false;
-                if (completion.err) |err| {
-                    if (err == error.Canceled) {
-                        cancel.c.setResult(.cancel, {});
-                        set = true;
-                    }
+            var set = false;
+            if (completion.err) |err| {
+                if (err == error.Canceled) {
+                    cancel.c.setResult(.cancel, {});
+                    set = true;
                 }
-                if (!set) {
-                    cancel.c.setError(error.AlreadyCompleted);
-                }
+            }
+            if (!set) {
+                cancel.c.setError(error.AlreadyCompleted);
             }
             self.markCompleted(&cancel.c);
         }
@@ -152,12 +150,12 @@ pub const Loop = struct {
 
     max_wait_ms: u64 = 60 * std.time.ms_per_s,
 
+    const default_queue_size = 256;
+
     pub const Options = struct {
         allocator: std.mem.Allocator = std.heap.page_allocator,
         thread_pool: ?*ThreadPool = null,
-        /// Size of submission queue for batched backends (io_uring, kqueue).
-        /// Must be > 0. Default is 256.
-        queue_size: u16 = 256,
+        queue_size: u16 = 0,
     };
 
     pub fn init(self: *Loop, options: Options) !void {
@@ -167,6 +165,10 @@ pub const Loop = struct {
             .allocator = options.allocator,
             .thread_pool = options.thread_pool,
         };
+
+        if (options.queue_size == 0) {
+            options.queue_size = default_queue_size;
+        }
 
         net.ensureWSAInitialized();
         self.state.updateNow();

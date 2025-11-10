@@ -155,11 +155,11 @@ pub fn processCancellations(
                 // Therefore processCancellations never sees this case.
                 unreachable;
             },
-            .adding => {
-                // UNREACHABLE: When cancel is added via loop.add() and target.state == .adding,
-                // the cancel is not submitted to the queue (loop.add returns early).
-                // By the time processCancellations runs, processSubmissions has already
-                // transitioned all .adding operations to .running or .completed.
+            .pending => {
+                // UNREACHABLE: When cancel is added via loop.add() and target.state == .pending,
+                // the cancel is not submitted to the backend (loop.add returns early).
+                // By the time backend.cancel() runs, backend.flush() has already
+                // transitioned all .pending operations to .running or .completed.
                 unreachable;
             },
             .running => {

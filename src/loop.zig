@@ -155,7 +155,7 @@ pub const Loop = struct {
     pub const Options = struct {
         allocator: std.mem.Allocator = std.heap.page_allocator,
         thread_pool: ?*ThreadPool = null,
-        queue_size: u16 = 0,
+        queue_size: u16 = default_queue_size,
     };
 
     pub fn init(self: *Loop, options: Options) !void {
@@ -167,7 +167,7 @@ pub const Loop = struct {
         };
 
         if (options.queue_size == 0) {
-            options.queue_size = default_queue_size;
+            return error.InvalidQueueSize;
         }
 
         net.ensureWSAInitialized();

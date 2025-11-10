@@ -54,11 +54,17 @@ poll_queue: std.AutoHashMapUnmanaged(NetHandle, PollEntry) = .empty,
 poll_fds: std.ArrayList(net.pollfd) = .empty,
 waker: Waker,
 
-pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
+pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16) !void {
     self.* = .{
         .allocator = allocator,
         .waker = undefined,
     };
+
+    try self.poll_fds.ensureTotalCapacity(self.allocator, queue_size);
+    errdefer self.poll_fds.deinit(self.allocator);
+
+    try self.poll_queue.ensureTotalCapacity(self.allocator, queue_size);
+    errdefer self.poll_queue.deinit(self.allocator);
 
     // Initialize Waker
     try self.waker.init(self);

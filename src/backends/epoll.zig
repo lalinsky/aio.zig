@@ -53,8 +53,9 @@ allocator: std.mem.Allocator,
 poll_queue: std.AutoHashMapUnmanaged(NetHandle, PollEntry) = .empty,
 epoll_fd: i32 = -1,
 waker: Waker,
+events: []std.os.linux.epoll_event,
 
-pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
+pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16) !void {
     const rc = std.os.linux.epoll_create1(std.os.linux.EPOLL.CLOEXEC);
     const epoll_fd: i32 = switch (posix.errno(rc)) {
         .SUCCESS => @intCast(rc),
@@ -66,7 +67,14 @@ pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
         .allocator = allocator,
         .epoll_fd = epoll_fd,
         .waker = undefined,
+        .events = undefined,
     };
+
+    self.events = try allocator.alloc(std.os.linux.epoll_event, queue_size);
+    errdefer allocator.free(self.events);
+
+    try self.poll_queue.ensureTotalCapacity(self.allocator, queue_size);
+    errdefer self.poll_queue.deinit(self.allocator);
 
     // Initialize Waker
     try self.waker.init(epoll_fd);
@@ -75,6 +83,7 @@ pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
 pub fn deinit(self: *Self) void {
     self.waker.deinit();
     self.poll_queue.deinit(self.allocator);
+    self.allocator.free(self.events);
     if (self.epoll_fd != -1) {
         _ = std.os.linux.close(self.epoll_fd);
     }
@@ -332,8 +341,7 @@ pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
 pub fn poll(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
     const timeout: i32 = std.math.cast(i32, timeout_ms) orelse std.math.maxInt(i32);
 
-    var events: [64]std.os.linux.epoll_event = undefined;
-    const rc = std.os.linux.epoll_wait(self.epoll_fd, &events, events.len, timeout);
+    const rc = std.os.linux.epoll_wait(self.epoll_fd, self.events.ptr, @intCast(self.events.len), timeout);
     const n: usize = switch (posix.errno(rc)) {
         .SUCCESS => @intCast(rc),
         .INTR => 0, // Interrupted by signal, no events
@@ -344,7 +352,7 @@ pub fn poll(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
         return true; // Timed out
     }
 
-    for (events[0..n]) |event| {
+    for (self.events[0..n]) |event| {
         const fd = event.data.fd;
 
         // Check if this is the async wakeup fd

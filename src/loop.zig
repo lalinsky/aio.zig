@@ -140,6 +140,9 @@ pub const Loop = struct {
     pub const Options = struct {
         allocator: std.mem.Allocator = std.heap.page_allocator,
         thread_pool: ?*ThreadPool = null,
+        /// Size of submission queue for batched backends (io_uring, kqueue).
+        /// Must be > 0. Default is 256.
+        queue_size: u16 = 256,
     };
 
     pub fn init(self: *Loop, options: Options) !void {
@@ -153,7 +156,7 @@ pub const Loop = struct {
         net.ensureWSAInitialized();
         self.state.updateNow();
 
-        try self.backend.init(options.allocator);
+        try self.backend.init(options.allocator, options.queue_size);
         errdefer self.backend.deinit();
 
         self.state.initialized = true;

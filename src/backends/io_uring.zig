@@ -86,16 +86,16 @@ allocator: std.mem.Allocator,
 ring: linux.IoUring,
 waker: Waker,
 
-pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
-    // Initialize io_uring with 256 entries
-    // This is a reasonable default - the kernel will round up to next power of 2
+pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16) !void {
+    // Initialize io_uring with specified queue size
+    // The kernel will round up to next power of 2
 
     var flags: u32 = 0;
     flags |= linux.IORING_SETUP_SINGLE_ISSUER;
     flags |= linux.IORING_SETUP_DEFER_TASKRUN;
     flags |= linux.IORING_SETUP_COOP_TASKRUN;
 
-    var ring = try linux.IoUring.init(256, flags);
+    var ring = try linux.IoUring.init(queue_size, flags);
     errdefer ring.deinit();
 
     self.* = .{

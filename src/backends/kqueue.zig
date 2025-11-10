@@ -51,15 +51,14 @@ const EVFILT_USER: i16 = switch (builtin.target.os.tag) {
 };
 const NOTE_TRIGGER: u32 = 0x01000000;
 
-// Maximum number of pending changes before forcing a flush
-const MAX_CHANGES: usize = 256;
-
 allocator: std.mem.Allocator,
 kqueue_fd: i32 = -1,
 waker: Waker,
-change_buffer: std.ArrayListUnmanaged(std.c.Kevent) = .{},
+change_buffer: std.ArrayList(std.c.Kevent) = .{},
+events: []std.c.Kevent,
+queue_size: u16,
 
-pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
+pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16) !void {
     const kq = std.c.kqueue();
     const kqueue_fd: i32 = switch (posix.errno(kq)) {
         .SUCCESS => @intCast(kq),
@@ -67,11 +66,19 @@ pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
     };
     errdefer _ = std.c.close(kqueue_fd);
 
+    const events = try allocator.alloc(std.c.Kevent, queue_size);
+    errdefer allocator.free(events);
+
+    var change_buffer = try std.ArrayList(std.c.Kevent).initCapacity(allocator, queue_size);
+    errdefer change_buffer.deinit(allocator);
+
     self.* = .{
         .allocator = allocator,
         .kqueue_fd = kqueue_fd,
         .waker = undefined,
-        .change_buffer = .{},
+        .change_buffer = change_buffer,
+        .events = events,
+        .queue_size = queue_size,
     };
 
     // Initialize Waker
@@ -81,6 +88,7 @@ pub fn init(self: *Self, allocator: std.mem.Allocator) !void {
 pub fn deinit(self: *Self) void {
     self.waker.deinit();
     self.change_buffer.deinit(self.allocator);
+    self.allocator.free(self.events);
     if (self.kqueue_fd != -1) {
         _ = std.c.close(self.kqueue_fd);
     }
@@ -105,11 +113,10 @@ fn getFilter(op: OperationType) i16 {
 /// Reserve a slot in the change buffer, flushing with non-blocking poll if full
 fn reserveChange(self: *Self, state: *LoopState) !*std.c.Kevent {
     // If at capacity, flush with non-blocking poll to drain completions
-    if (self.change_buffer.items.len >= MAX_CHANGES) {
+    if (self.change_buffer.items.len >= self.queue_size) {
         _ = try self.poll(state, 0);
     }
-    // Ensure capacity for one more entry
-    try self.change_buffer.ensureUnusedCapacity(self.allocator, 1);
+    // We pre-allocated capacity, so this will never fail
     return self.change_buffer.addOneAssumeCapacity();
 }
 
@@ -290,7 +297,6 @@ pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
 }
 
 pub fn poll(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
-    var events: [64]std.c.Kevent = undefined;
     var timeout_spec: std.c.timespec = undefined;
     const timeout_ptr: ?*const std.c.timespec = if (timeout_ms < std.math.maxInt(u64)) blk: {
         timeout_spec = .{
@@ -311,8 +317,8 @@ pub fn poll(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
         self.kqueue_fd,
         first_batch.ptr,
         @intCast(first_batch_size),
-        &events,
-        events.len,
+        self.events.ptr,
+        @intCast(self.events.len),
         timeout_ptr,
     );
     const n: usize = switch (posix.errno(rc)) {
@@ -340,7 +346,7 @@ pub fn poll(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
         return true; // Timed out
     }
 
-    for (events[0..n]) |event| {
+    for (self.events[0..n]) |event| {
         // Check if this is the async wakeup user event
         if (event.filter == EVFILT_USER and event.ident == self.waker.ident) {
             state.loop.processAsyncHandles();

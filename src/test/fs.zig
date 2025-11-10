@@ -90,7 +90,7 @@ test "File: rename/delete" {
     const cwd = std.fs.cwd();
 
     // Create a test file
-    var file_create = aio.FileCreate.init(cwd.fd, "test-rename-src", 0o664, .{ .read = true, .truncate = true });
+    var file_create = aio.FileCreate.init(cwd.fd, "test-rename-src", .{ .read = true, .truncate = true, .mode = 0o664 });
     loop.add(&file_create.c);
     try loop.run(.until_done);
     try std.testing.expectEqual(.completed, file_create.c.state);

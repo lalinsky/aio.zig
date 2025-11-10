@@ -5,6 +5,8 @@ const net = @import("../os/net.zig");
 const fs = @import("../os/fs.zig");
 const time = @import("../os/time.zig");
 const common = @import("common.zig");
+const ReadBuf = @import("../buf.zig").ReadBuf;
+const WriteBuf = @import("../buf.zig").WriteBuf;
 const LoopState = @import("../loop.zig").LoopState;
 const Completion = @import("../completion.zig").Completion;
 const Op = @import("../completion.zig").Op;
@@ -150,11 +152,12 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
         },
         .net_recv => {
             const data = c.cast(NetRecv);
+            const iov = ReadBuf.toIovecs(data.buffers);
             data.internal.msg = .{
                 .name = null,
                 .namelen = 0,
-                .iov = data.buffers.ptr,
-                .iovlen = data.buffers.len,
+                .iov = iov.ptr,
+                .iovlen = iov.len,
                 .control = null,
                 .controllen = 0,
                 .flags = 0,
@@ -170,11 +173,12 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
         },
         .net_send => {
             const data = c.cast(NetSend);
+            const iov = WriteBuf.toIovecs(data.buffers);
             data.internal.msg = .{
                 .name = null,
                 .namelen = 0,
-                .iov = data.buffers.ptr,
-                .iovlen = data.buffers.len,
+                .iov = iov.ptr,
+                .iovlen = iov.len,
                 .control = null,
                 .controllen = 0,
                 .flags = 0,
@@ -190,11 +194,12 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
         },
         .net_recvfrom => {
             const data = c.cast(NetRecvFrom);
+            const iov = ReadBuf.toIovecs(data.buffers);
             data.internal.msg = .{
                 .name = @ptrCast(data.addr),
                 .namelen = if (data.addr_len) |len| len.* else 0,
-                .iov = data.buffers.ptr,
-                .iovlen = data.buffers.len,
+                .iov = iov.ptr,
+                .iovlen = iov.len,
                 .control = null,
                 .controllen = 0,
                 .flags = 0,
@@ -210,11 +215,12 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
         },
         .net_sendto => {
             const data = c.cast(NetSendTo);
+            const iov = WriteBuf.toIovecs(data.buffers);
             data.internal.msg = .{
                 .name = @ptrCast(data.addr),
                 .namelen = data.addr_len,
-                .iov = data.buffers.ptr,
-                .iovlen = data.buffers.len,
+                .iov = iov.ptr,
+                .iovlen = iov.len,
                 .control = null,
                 .controllen = 0,
                 .flags = 0,

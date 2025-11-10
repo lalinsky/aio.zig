@@ -260,13 +260,6 @@ pub const Loop = struct {
                         return;
                     }
 
-                    if (cancel.cancel_c.state == .pending) {
-                        // Completion is pending flush to backend
-                        // Backend will see canceled field during flush and handle appropriately
-                        self.state.active += 1;
-                        return;
-                    }
-
                     switch (cancel.cancel_c.op) {
                         .timer => {
                             const timer = cancel.cancel_c.cast(Timer);

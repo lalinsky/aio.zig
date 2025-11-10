@@ -379,10 +379,6 @@ pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
             // loop.add() handles it directly and doesn't call backend.cancel().
             unreachable;
         },
-        .pending => {
-            // UNREACHABLE: operations are marked .running immediately when SQEs are prepared
-            unreachable;
-        },
         .running => {
             // Target is executing in io_uring. Submit a cancel SQE.
             // This will generate TWO CQEs:

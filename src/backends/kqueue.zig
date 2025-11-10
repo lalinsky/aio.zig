@@ -38,7 +38,6 @@ const Self = @This();
 
 const log = std.log.scoped(.zio_kqueue);
 
-
 // These are not defined in std.c for FreeBSD/NetBSD,
 // but the values are the same across all systems using kqueue
 const EV_ERROR: u16 = 0x4000;
@@ -212,7 +211,7 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
                 state.markCompleted(c);
             } else |err| switch (err) {
                 error.WouldBlock, error.ConnectionPending => {
-                    // Queue for completion - queueRegister handles errors and sets .pending state
+                    // Queue for completion - queueRegister handles errors
                     self.queueRegister(state, data.handle, c);
                 },
                 else => {

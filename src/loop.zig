@@ -43,6 +43,7 @@ pub fn SimpleStack(comptime T: type) type {
         pub fn pop(self: *@This()) ?*T {
             const head = self.head orelse return null;
             self.head = head.next;
+            head.next = null;
             return head;
         }
 
@@ -93,7 +94,7 @@ pub const LoopState = struct {
 
     async_handles: Queue(Completion) = .{},
 
-    completions: SimpleStack(Completion) = .{},
+    completions: Queue(Completion) = .{},
     work_completions: AtomicStack(Completion) = .{},
 
     pub fn markCompleted(self: *LoopState, completion: *Completion) void {

@@ -409,11 +409,6 @@ pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
     }
 }
 
-/// Flush any pending operations to the kernel.
-pub fn flush(self: *Self) !void {
-    _ = try self.ring.submit();
-}
-
 pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
     const linux_os = @import("../os/linux.zig");
 

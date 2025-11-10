@@ -286,11 +286,6 @@ pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
     state.markCompleted(target);
 }
 
-/// Flush any pending operations - no-op for poll backend.
-pub fn flush(self: *Self) !void {
-    _ = self;
-}
-
 pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
     const timeout: i32 = std.math.cast(i32, timeout_ms) orelse std.math.maxInt(i32);
 

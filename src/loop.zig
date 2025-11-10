@@ -460,9 +460,6 @@ pub const Loop = struct {
             }
         }
 
-        // Flush any pending operations to the kernel
-        try self.backend.flush();
-
         const timed_out = try self.backend.tick(&self.state, timeout_ms);
 
         // Process any work completions from thread pool

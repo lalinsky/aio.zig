@@ -273,11 +273,6 @@ pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
     state.markCompleted(target);
 }
 
-/// Flush any pending operations to the kernel.
-pub fn flush(self: *Self) !void {
-    try self.submitChanges();
-}
-
 pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
     var events: [64]std.c.Kevent = undefined;
     var timeout_spec: std.c.timespec = undefined;
@@ -289,12 +284,41 @@ pub fn tick(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
         break :blk &timeout_spec;
     } else null;
 
-    const rc = std.c.kevent(self.kqueue_fd, &.{}, 0, &events, events.len, timeout_ptr);
+    // Submit pending changes AND wait for events in a single kevent() call
+    const first_batch_size = @min(self.change_buffer.items.len, 64);
+    const first_batch = if (first_batch_size > 0)
+        self.change_buffer.items[0..first_batch_size]
+    else
+        &[_]std.c.Kevent{};
+
+    const rc = std.c.kevent(
+        self.kqueue_fd,
+        first_batch.ptr,
+        @intCast(first_batch_size),
+        &events,
+        events.len,
+        timeout_ptr,
+    );
     const n: usize = switch (posix.errno(rc)) {
         .SUCCESS => @intCast(rc),
         .INTR => 0, // Interrupted by signal, no events
         else => |err| return posix.unexpectedErrno(err),
     };
+
+    // Remove submitted changes from buffer
+    if (first_batch_size > 0) {
+        std.mem.copyForwards(
+            std.c.Kevent,
+            self.change_buffer.items,
+            self.change_buffer.items[first_batch_size..],
+        );
+        self.change_buffer.shrinkRetainingCapacity(self.change_buffer.items.len - first_batch_size);
+    }
+
+    // Submit any remaining changes (if we had more than 64)
+    if (self.change_buffer.items.len > 0) {
+        try self.submitChanges();
+    }
 
     if (n == 0) {
         return true; // Timed out

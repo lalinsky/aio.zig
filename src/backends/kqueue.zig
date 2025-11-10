@@ -47,7 +47,7 @@ const EV_EOF: u16 = 0x8000;
 // https://github.com/ziglang/zig/pull/25853
 const EVFILT_USER: i16 = switch (builtin.target.os.tag) {
     .netbsd => 8,
-    else => std.std.c.EVFILT.USER,
+    else => std.c.EVFILT.USER,
 };
 const NOTE_TRIGGER: u32 = 0x01000000;
 

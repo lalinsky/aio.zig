@@ -5,6 +5,7 @@ const Timer = aio.Timer;
 const Cancel = aio.Cancel;
 const Async = aio.Async;
 const Work = aio.Work;
+const ThreadPool = aio.ThreadPool;
 const NetOpen = aio.NetOpen;
 const NetBind = aio.NetBind;
 const NetListen = aio.NetListen;
@@ -547,4 +548,110 @@ test "cancel: multiple timers, cancel one" {
 
     // timer2 should be canceled
     try std.testing.expectError(error.Canceled, timer2.getResult());
+}
+
+test "cancel: work after completion returns AlreadyCompleted" {
+    var thread_pool: aio.ThreadPool = undefined;
+    try thread_pool.init(std.testing.allocator, .{
+        .min_threads = 1,
+        .max_threads = 1,
+    });
+    defer thread_pool.deinit();
+
+    var loop: Loop = undefined;
+    try loop.init(.{ .thread_pool = &thread_pool });
+    defer loop.deinit();
+
+    const TestFn = struct {
+        called: bool = false,
+        pub fn main(work: *Work) void {
+            var self: *@This() = @ptrCast(@alignCast(work.userdata));
+            self.called = true;
+        }
+    };
+
+    var test_fn: TestFn = .{};
+    var work = Work.init(&TestFn.main, @ptrCast(&test_fn));
+
+    loop.add(&work.c);
+
+    // Wait for work to complete
+    try loop.run(.until_done);
+    try std.testing.expectEqual(.dead, work.c.state);
+    try work.getResult();
+    try std.testing.expect(test_fn.called);
+
+    // Try to cancel after completion
+    try std.testing.expectError(error.AlreadyCompleted, loop.cancel(&work.c));
+}
+
+test "cancel: work before run" {
+    var thread_pool: aio.ThreadPool = undefined;
+    try thread_pool.init(std.testing.allocator, .{
+        .min_threads = 1,
+        .max_threads = 1,
+    });
+    defer thread_pool.deinit();
+
+    var loop: Loop = undefined;
+    try loop.init(.{ .thread_pool = &thread_pool });
+    defer loop.deinit();
+
+    const TestFn = struct {
+        called: bool = false,
+        pub fn main(work: *Work) void {
+            var self: *@This() = @ptrCast(@alignCast(work.userdata));
+            self.called = true;
+        }
+    };
+
+    var test_fn: TestFn = .{};
+    var work = Work.init(&TestFn.main, @ptrCast(&test_fn));
+
+    loop.add(&work.c);
+
+    // Cancel before running
+    try loop.cancel(&work.c);
+
+    try loop.run(.until_done);
+
+    try std.testing.expectEqual(.dead, work.c.state);
+    try std.testing.expectError(error.Canceled, work.getResult());
+    try std.testing.expect(!test_fn.called);
+}
+
+test "cancel: work double cancel returns AlreadyCanceled" {
+    var thread_pool: aio.ThreadPool = undefined;
+    try thread_pool.init(std.testing.allocator, .{
+        .min_threads = 1,
+        .max_threads = 1,
+    });
+    defer thread_pool.deinit();
+
+    var loop: Loop = undefined;
+    try loop.init(.{ .thread_pool = &thread_pool });
+    defer loop.deinit();
+
+    const TestFn = struct {
+        called: bool = false,
+        pub fn main(work: *Work) void {
+            var self: *@This() = @ptrCast(@alignCast(work.userdata));
+            self.called = true;
+        }
+    };
+
+    var test_fn: TestFn = .{};
+    var work = Work.init(&TestFn.main, @ptrCast(&test_fn));
+
+    loop.add(&work.c);
+
+    // First cancel should succeed
+    try loop.cancel(&work.c);
+
+    // Second cancel should fail
+    try std.testing.expectError(error.AlreadyCanceled, loop.cancel(&work.c));
+
+    try loop.run(.until_done);
+    try std.testing.expectError(error.Canceled, work.getResult());
+    try std.testing.expect(!test_fn.called);
 }

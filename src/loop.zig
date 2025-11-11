@@ -108,7 +108,7 @@ pub const LoopState = struct {
         std.debug.assert(completion.state == .running);
         std.debug.assert(completion.has_result);
 
-        if (completion.canceled) |cancel| {
+        if (completion.canceled_by) |cancel| {
             std.debug.assert(!cancel.c.has_result);
             cancel.c.state = .running; // Set to running before marking completed
             var set = false;
@@ -265,6 +265,102 @@ pub const Loop = struct {
         }
     }
 
+    /// Cancel a completion directly without requiring a Cancel completion struct.
+    /// This is a fire-and-forget operation - the completion's callback will still be
+    /// invoked when the operation completes (either with error.Canceled or its natural result).
+    pub fn cancel(self: *Loop, completion: *Completion) !void {
+        // Check if already being canceled
+        if (completion.canceled) return error.AlreadyCanceled;
+
+        // Check state
+        if (completion.state == .completed or completion.state == .dead) {
+            return error.AlreadyCompleted;
+        }
+
+        if (completion.state == .new) {
+            return error.NotStarted;
+        }
+
+        // Mark as canceled (but no Cancel completion)
+        completion.canceled = true;
+        // completion.canceled_by remains null
+
+        // Delegate to appropriate handler based on op type
+        switch (completion.op) {
+            .timer => {
+                const timer = completion.cast(Timer);
+                timer.c.setError(error.Canceled);
+                self.state.clearTimer(timer);
+                self.state.markCompleted(&timer.c);
+            },
+            .async => {
+                const async_handle = completion.cast(Async);
+                async_handle.c.setError(error.Canceled);
+                _ = self.state.async_handles.remove(&async_handle.c);
+                self.state.markCompleted(&async_handle.c);
+            },
+            .work => {
+                const work = completion.cast(Work);
+                std.debug.assert(work.linked == null); // User Work should never have linked set
+
+                if (self.thread_pool) |thread_pool| {
+                    // Try to atomically cancel the work
+                    if (thread_pool.cancel(work)) {
+                        // Successfully canceled, work was removed from queue
+                        work.c.setError(error.Canceled);
+                        self.state.markCompleted(&work.c);
+                    } else {
+                        // Work is already running/completed - can't cancel
+                        completion.canceled = false; // Restore flag
+                        return error.AlreadyCompleted;
+                    }
+                } else {
+                    // No thread pool - work should already be completed
+                    completion.canceled = false; // Restore flag
+                    return error.NoThreadPool;
+                }
+            },
+            .file_open, .file_create, .file_close, .file_read, .file_write, .file_sync, .file_rename, .file_delete => {
+                // File ops on backends without native support use internal Work
+                if (!Backend.supports_file_ops) {
+                    const work = switch (completion.op) {
+                        .file_open => &completion.cast(FileOpen).internal.work,
+                        .file_create => &completion.cast(FileCreate).internal.work,
+                        .file_close => &completion.cast(FileClose).internal.work,
+                        .file_read => &completion.cast(FileRead).internal.work,
+                        .file_write => &completion.cast(FileWrite).internal.work,
+                        .file_sync => &completion.cast(FileSync).internal.work,
+                        .file_rename => &completion.cast(FileRename).internal.work,
+                        .file_delete => &completion.cast(FileDelete).internal.work,
+                        else => unreachable,
+                    };
+
+                    if (self.thread_pool) |thread_pool| {
+                        if (thread_pool.cancel(work)) {
+                            // Successfully canceled the internal work
+                            completion.setError(error.Canceled);
+                            self.state.markCompleted(completion);
+                        } else {
+                            // Work is running/completed
+                            completion.canceled = false; // Restore flag
+                            return error.AlreadyCompleted;
+                        }
+                    } else {
+                        completion.canceled = false; // Restore flag
+                        return error.NoThreadPool;
+                    }
+                } else {
+                    // Backend operations with native support
+                    self.backend.cancel(&self.state, completion);
+                }
+            },
+            else => {
+                // Backend operations (net_*, etc)
+                self.backend.cancel(&self.state, completion);
+            },
+        }
+    }
+
     pub fn run(self: *Loop, mode: RunMode) !void {
         std.debug.assert(self.state.initialized);
         if (self.state.stopped) return;
@@ -290,10 +386,11 @@ pub const Loop = struct {
 
         std.debug.assert(completion.state == .new);
 
-        if (completion.canceled != null) {
+        if (completion.canceled) {
             // Directly mark it as canceled
             completion.setError(error.Canceled);
             self.state.active += 1;
+            completion.state = .running;
             self.state.markCompleted(completion);
             return;
         }
@@ -328,25 +425,28 @@ pub const Loop = struct {
             },
             else => {
                 if (completion.op == .cancel) {
-                    const cancel = completion.cast(Cancel);
+                    const cancel_op = completion.cast(Cancel);
 
-                    if (cancel.target.canceled != null) {
+                    if (cancel_op.target.canceled) {
                         completion.setError(error.AlreadyCanceled);
                         self.state.active += 1;
+                        completion.state = .running;
                         self.state.markCompleted(completion);
                         return;
                     }
 
-                    if (cancel.target.state == .completed or cancel.target.state == .dead) {
+                    if (cancel_op.target.state == .completed or cancel_op.target.state == .dead) {
                         completion.setError(error.AlreadyCompleted);
                         self.state.active += 1;
+                        completion.state = .running;
                         self.state.markCompleted(completion);
                         return;
                     }
 
-                    cancel.target.canceled = cancel;
+                    cancel_op.target.canceled = true;
+                    cancel_op.target.canceled_by = cancel_op;
 
-                    if (cancel.target.state == .new) {
+                    if (cancel_op.target.state == .new) {
                         // Completion hasn't been added yet - just mark it as canceled
                         // When it gets added, the early-exit check at the start of add() will catch it
                         // and complete both the target and this cancel operation
@@ -354,9 +454,9 @@ pub const Loop = struct {
                         return;
                     }
 
-                    switch (cancel.target.op) {
+                    switch (cancel_op.target.op) {
                         .timer => {
-                            const timer = cancel.target.cast(Timer);
+                            const timer = cancel_op.target.cast(Timer);
                             self.state.active += 1; // Count the cancel operation
                             timer.c.setError(error.Canceled);
                             self.state.clearTimer(timer);
@@ -364,7 +464,7 @@ pub const Loop = struct {
                             return;
                         },
                         .async => {
-                            const async_handle = cancel.target.cast(Async);
+                            const async_handle = cancel_op.target.cast(Async);
                             self.state.active += 1; // Count the cancel operation
                             async_handle.c.setError(error.Canceled);
                             _ = self.state.async_handles.remove(&async_handle.c);
@@ -372,7 +472,7 @@ pub const Loop = struct {
                             return;
                         },
                         .work => {
-                            const work = cancel.target.cast(Work);
+                            const work = cancel_op.target.cast(Work);
                             std.debug.assert(work.linked == null); // User Work should never have linked set
                             self.state.active += 1; // Count the cancel operation
 
@@ -390,7 +490,7 @@ pub const Loop = struct {
                                 // No thread pool - work is always immediately completed with error.NoThreadPool
                                 std.debug.assert(work.c.state == .completed or work.c.state == .dead);
                                 completion.setError(error.AlreadyCompleted);
-                                self.state.markCompleted(&cancel.c);
+                                self.state.markCompleted(&cancel_op.c);
                             }
                             return;
                         },
@@ -399,28 +499,28 @@ pub const Loop = struct {
                             if (!Backend.supports_file_ops) {
                                 self.state.active += 1; // Count the cancel operation
 
-                                const work = switch (cancel.target.op) {
-                                    .file_open => &cancel.target.cast(FileOpen).internal.work,
-                                    .file_create => &cancel.target.cast(FileCreate).internal.work,
-                                    .file_close => &cancel.target.cast(FileClose).internal.work,
-                                    .file_read => &cancel.target.cast(FileRead).internal.work,
-                                    .file_write => &cancel.target.cast(FileWrite).internal.work,
-                                    .file_sync => &cancel.target.cast(FileSync).internal.work,
-                                    .file_rename => &cancel.target.cast(FileRename).internal.work,
-                                    .file_delete => &cancel.target.cast(FileDelete).internal.work,
+                                const work = switch (cancel_op.target.op) {
+                                    .file_open => &cancel_op.target.cast(FileOpen).internal.work,
+                                    .file_create => &cancel_op.target.cast(FileCreate).internal.work,
+                                    .file_close => &cancel_op.target.cast(FileClose).internal.work,
+                                    .file_read => &cancel_op.target.cast(FileRead).internal.work,
+                                    .file_write => &cancel_op.target.cast(FileWrite).internal.work,
+                                    .file_sync => &cancel_op.target.cast(FileSync).internal.work,
+                                    .file_rename => &cancel_op.target.cast(FileRename).internal.work,
+                                    .file_delete => &cancel_op.target.cast(FileDelete).internal.work,
                                     else => unreachable,
                                 };
 
                                 if (self.thread_pool) |thread_pool| {
                                     if (thread_pool.cancel(work)) {
                                         // Successfully canceled the internal work
-                                        cancel.target.setError(error.Canceled);
-                                        self.state.markCompleted(cancel.target);
+                                        cancel_op.target.setError(error.Canceled);
+                                        self.state.markCompleted(cancel_op.target);
                                     }
                                     // If cancel failed, work is running/completed and will complete normally
                                 } else {
                                     // No thread pool - file op should already be completed with error.Unexpected
-                                    std.debug.assert(cancel.target.state == .completed or cancel.target.state == .dead);
+                                    std.debug.assert(cancel_op.target.state == .completed or cancel_op.target.state == .dead);
                                     completion.setError(error.AlreadyCompleted);
                                     self.state.markCompleted(completion);
                                 }
@@ -431,7 +531,9 @@ pub const Loop = struct {
                     }
 
                     // Cancel operation for backend operation
-                    self.backend.cancel(&self.state, completion);
+                    completion.state = .running;
+                    self.state.active += 1; // Count the cancel operation
+                    self.backend.cancel(&self.state, cancel_op.target);
                     return;
                 }
 

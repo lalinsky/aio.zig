@@ -91,6 +91,30 @@ test "Loop: timer cancel" {
     std.log.info("timer cancel: elapsed={}ms", .{elapsed_ms});
 }
 
+test "Loop: timer cancel (direct)" {
+    var loop: Loop = undefined;
+    try loop.init(.{});
+    defer loop.deinit();
+
+    const timeout_ms = 100;
+    var timer: Timer = .init(timeout_ms);
+    loop.add(&timer.c);
+
+    // Use loop.cancel() instead of Cancel completion
+    try loop.cancel(&timer.c);
+
+    var wall_timer = try std.time.Timer.start();
+    try loop.run(.until_done);
+    const elapsed_ns = wall_timer.read();
+    const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
+
+    // Timer should be canceled immediately, much faster than the timeout
+    try std.testing.expectEqual(.dead, timer.c.state);
+    try std.testing.expectError(error.Canceled, timer.c.getResult(.timer));
+    try std.testing.expect(elapsed_ms < 50);
+    std.log.info("timer cancel (direct): elapsed={}ms", .{elapsed_ms});
+}
+
 test "Loop: close" {
     var loop: Loop = undefined;
     try loop.init(.{});
@@ -189,6 +213,59 @@ test "Loop: cancel net_accept" {
     try std.testing.expectEqual(.dead, cancel.c.state);
 
     // Verify accept got canceled error
+    try std.testing.expectError(error.Canceled, accept_comp.getResult());
+
+    // Close server socket
+    var close_server: NetClose = .init(server_sock);
+    loop.add(&close_server.c);
+    try loop.run(.until_done);
+}
+
+test "Loop: cancel net_accept (direct)" {
+    var loop: Loop = undefined;
+    try loop.init(.{});
+    defer loop.deinit();
+
+    // Create and bind server socket
+    var server_open: NetOpen = .init(.ipv4, .stream, .{});
+    loop.add(&server_open.c);
+    try loop.run(.until_done);
+    const server_sock = try server_open.c.getResult(.net_open);
+
+    var addr = net.sockaddr.in{
+        .family = net.AF.INET,
+        .port = 0,
+        .addr = @bitCast([4]u8{ 127, 0, 0, 1 }),
+        .zero = [_]u8{0} ** 8,
+    };
+    var addr_len: net.socklen_t = @sizeOf(@TypeOf(addr));
+    var server_bind: NetBind = .init(server_sock, @ptrCast(&addr), &addr_len);
+    loop.add(&server_bind.c);
+    try loop.run(.until_done);
+    try server_bind.c.getResult(.net_bind);
+
+    // Listen
+    var server_listen: NetListen = .init(server_sock, 1);
+    loop.add(&server_listen.c);
+    try loop.run(.until_done);
+    try server_listen.c.getResult(.net_listen);
+
+    // Start accept (will block waiting for connection)
+    var accept_comp: NetAccept = .init(server_sock, null, null);
+    loop.add(&accept_comp.c);
+
+    // Run once to get accept into poll queue
+    try loop.run(.no_wait);
+    try std.testing.expectEqual(.running, accept_comp.c.state);
+
+    // Use loop.cancel() directly instead of Cancel completion
+    try loop.cancel(&accept_comp.c);
+
+    // Run until completion
+    try loop.run(.until_done);
+
+    // Verify accept completed with canceled error
+    try std.testing.expectEqual(.dead, accept_comp.c.state);
     try std.testing.expectError(error.Canceled, accept_comp.getResult());
 
     // Close server socket

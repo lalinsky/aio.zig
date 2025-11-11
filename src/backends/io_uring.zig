@@ -418,15 +418,8 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
 }
 
 /// Cancel a completion - infallible.
-/// Note: target.canceled is already set by loop.add() before this is called.
-pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
-    // Mark cancel operation as running
-    c.state = .running;
-    state.active += 1;
-
-    const cancel_op = c.cast(Cancel);
-    const target = cancel_op.target;
-
+/// Note: target.canceled is already set by loop.add() or loop.cancel() before this is called.
+pub fn cancel(self: *Self, state: *LoopState, target: *Completion) void {
     switch (target.state) {
         .new => {
             // UNREACHABLE: When cancel is added via loop.add() and target.state == .new,
@@ -436,27 +429,26 @@ pub fn cancel(self: *Self, state: *LoopState, c: *Completion) void {
         .running => {
             // Target is executing in io_uring. Submit a cancel SQE.
             // This will generate TWO CQEs:
-            // 1. Cancel CQE (user_data=target, res=0 or -ENOENT)
+            // 1. Cancel CQE (user_data=0, res=0 or -ENOENT)
             // 2. Target CQE (user_data=target, res=-ECANCELED or success if cancel was too late)
             //
-            // In tick(), we:
-            // - Skip cancel CQEs (they never complete the cancel directly)
+            // In poll(), we:
+            // - Skip cancel CQEs with user_data=0
             // - Process target CQE and mark target complete
-            // - markCompleted(target) recursively completes the cancel via target.canceled link
+            // - markCompleted(target) recursively completes the Cancel operation if canceled_by is set
             const sqe = self.getSqe(state) catch {
                 log.err("Failed to get io_uring SQE for cancel", .{});
                 // Cancel SQE failed - do nothing, let target complete naturally
-                // When target completes, markCompleted(target) will recursively complete cancel
+                // When target completes, markCompleted(target) will recursively complete cancel if canceled_by is set
                 return;
             };
             sqe.prep_cancel(@intFromPtr(target), 0);
-            sqe.user_data = @intFromPtr(c);
+            sqe.user_data = 0; // Use 0 to indicate this is a cancel SQE that should be skipped
         },
         .completed, .dead => {
             // Target already completed (has result) or fully finished (callback called).
-            // No CQEs will arrive. Complete cancel immediately.
-            c.setError(error.AlreadyCompleted);
-            state.markCompleted(c);
+            // No CQEs will arrive. This shouldn't happen as loop.add()/loop.cancel() check state first.
+            unreachable;
         },
     }
 }

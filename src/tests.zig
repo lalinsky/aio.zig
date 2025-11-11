@@ -20,6 +20,7 @@ test {
     _ = @import("test/dgram_server.zig");
     _ = @import("test/fs.zig");
     _ = @import("test/timer.zig");
+    _ = @import("test/cancel.zig");
 }
 
 test "Loop: empty run(.no_wait)" {

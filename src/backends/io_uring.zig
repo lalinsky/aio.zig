@@ -12,6 +12,10 @@ const Completion = @import("../completion.zig").Completion;
 const Op = @import("../completion.zig").Op;
 const Queue = @import("../queue.zig").Queue;
 const Cancel = @import("../completion.zig").Cancel;
+
+// Special user_data values for internal operations
+const USER_DATA_WAKER: u64 = 0; // Waker eventfd POLL_ADD operations
+const USER_DATA_CANCEL: u64 = 1; // Cancel SQE operations (should be skipped)
 const NetOpen = @import("../completion.zig").NetOpen;
 const NetBind = @import("../completion.zig").NetBind;
 const NetListen = @import("../completion.zig").NetListen;
@@ -429,11 +433,11 @@ pub fn cancel(self: *Self, state: *LoopState, target: *Completion) void {
         .running => {
             // Target is executing in io_uring. Submit a cancel SQE.
             // This will generate TWO CQEs:
-            // 1. Cancel CQE (user_data=0, res=0 or -ENOENT)
+            // 1. Cancel CQE (user_data=USER_DATA_CANCEL, res=0 or -ENOENT)
             // 2. Target CQE (user_data=target, res=-ECANCELED or success if cancel was too late)
             //
             // In poll(), we:
-            // - Skip cancel CQEs with user_data=0
+            // - Skip cancel CQEs with user_data=USER_DATA_CANCEL
             // - Process target CQE and mark target complete
             // - markCompleted(target) recursively completes the Cancel operation if canceled_by is set
             const sqe = self.getSqe(state) catch {
@@ -443,7 +447,7 @@ pub fn cancel(self: *Self, state: *LoopState, target: *Completion) void {
                 return;
             };
             sqe.prep_cancel(@intFromPtr(target), 0);
-            sqe.user_data = 0; // Use 0 to indicate this is a cancel SQE that should be skipped
+            sqe.user_data = USER_DATA_CANCEL;
         },
         .completed, .dead => {
             // Target already completed (has result) or fully finished (callback called).
@@ -512,11 +516,16 @@ pub fn poll(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
     }
 
     for (cqes[0..count]) |cqe| {
-        // Skip internal wake-up operation (user_data == 0)
-        if (cqe.user_data == 0) {
+        // Handle internal operations with special user_data values
+        if (cqe.user_data == USER_DATA_WAKER) {
             // Wake-up POLL_ADD completion
             self.waker.drain();
             state.loop.processAsyncHandles();
+            continue;
+        }
+
+        if (cqe.user_data == USER_DATA_CANCEL) {
+            // Cancel SQE completion - just skip it
             continue;
         }
 
@@ -746,7 +755,7 @@ const Waker = struct {
 
         const sqe = try self.ring.get_sqe();
         sqe.prep_poll_add(self.eventfd, linux.POLL.IN);
-        sqe.user_data = 0; // Special marker for wake-up events
+        sqe.user_data = USER_DATA_WAKER;
 
         self.needs_rearm = false;
     }

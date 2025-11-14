@@ -5,14 +5,86 @@ const LoopState = @import("../loop.zig").LoopState;
 const Completion = @import("../completion.zig").Completion;
 const Op = @import("../completion.zig").Op;
 
+// Winsock extension function GUIDs
+const WSAID_ACCEPTEX = windows.GUID{
+    .Data1 = 0xb5367df1,
+    .Data2 = 0xcbac,
+    .Data3 = 0x11cf,
+    .Data4 = .{ 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92 },
+};
+
+const WSAID_CONNECTEX = windows.GUID{
+    .Data1 = 0x25a207b9,
+    .Data2 = 0xddf3,
+    .Data3 = 0x4660,
+    .Data4 = .{ 0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74, 0x06, 0x3e },
+};
+
+// Winsock extension function types
+const LPFN_ACCEPTEX = *const fn (
+    sListenSocket: windows.ws2_32.SOCKET,
+    sAcceptSocket: windows.ws2_32.SOCKET,
+    lpOutputBuffer: *anyopaque,
+    dwReceiveDataLength: windows.DWORD,
+    dwLocalAddressLength: windows.DWORD,
+    dwRemoteAddressLength: windows.DWORD,
+    lpdwBytesReceived: *windows.DWORD,
+    lpOverlapped: *windows.OVERLAPPED,
+) callconv(.winapi) windows.BOOL;
+
+const LPFN_CONNECTEX = *const fn (
+    s: windows.ws2_32.SOCKET,
+    name: *const windows.ws2_32.sockaddr,
+    namelen: c_int,
+    lpSendBuffer: ?*const anyopaque,
+    dwSendDataLength: windows.DWORD,
+    lpdwBytesSent: ?*windows.DWORD,
+    lpOverlapped: *windows.OVERLAPPED,
+) callconv(.winapi) windows.BOOL;
+
+const SIO_GET_EXTENSION_FUNCTION_POINTER = windows.ws2_32._WSAIORW(windows.ws2_32.IOC_WS2, 6);
+
+fn loadWinsockExtension(comptime T: type, sock: windows.ws2_32.SOCKET, guid: windows.GUID) !T {
+    var func_ptr: T = undefined;
+    var bytes: windows.DWORD = 0;
+
+    const rc = windows.ws2_32.WSAIoctl(
+        sock,
+        SIO_GET_EXTENSION_FUNCTION_POINTER,
+        @constCast(&guid),
+        @sizeOf(windows.GUID),
+        &func_ptr,
+        @sizeOf(T),
+        &bytes,
+        null,
+        null,
+    );
+
+    if (rc != 0) {
+        return error.Unexpected;
+    }
+
+    return func_ptr;
+}
+
 pub const NetHandle = net.fd_t;
 
 pub const supports_file_ops = true;
+
+const ExtensionFunctions = struct {
+    acceptex: LPFN_ACCEPTEX,
+    connectex: LPFN_CONNECTEX,
+};
 
 pub const SharedState = struct {
     mutex: std.Thread.Mutex = .{},
     refcount: usize = 0,
     iocp: windows.HANDLE = windows.INVALID_HANDLE_VALUE,
+
+    // Cache of extension function pointers per address family
+    // Key: address family (AF_INET, AF_INET6), Value: ExtensionFunctions
+    // AcceptEx/ConnectEx are STREAM-only, so family is sufficient
+    extension_cache: std.AutoHashMapUnmanaged(u16, ExtensionFunctions) = .{},
 
     pub fn acquire(self: *SharedState) !void {
         self.mutex.lock();
@@ -30,7 +102,7 @@ pub const SharedState = struct {
         self.refcount += 1;
     }
 
-    pub fn release(self: *SharedState) void {
+    pub fn release(self: *SharedState, allocator: std.mem.Allocator) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -43,7 +115,49 @@ pub const SharedState = struct {
                 windows.CloseHandle(self.iocp);
                 self.iocp = windows.INVALID_HANDLE_VALUE;
             }
+
+            // Clear extension function cache
+            self.extension_cache.deinit(allocator);
+            self.extension_cache = .{};
         }
+    }
+
+    /// Get extension functions for a given address family, loading on-demand if needed
+    pub fn getExtensions(self: *SharedState, allocator: std.mem.Allocator, family: u16) !*const ExtensionFunctions {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Check if already cached
+        if (self.extension_cache.get(family)) |funcs| {
+            return &funcs;
+        }
+
+        // Not cached - load extension functions
+        const funcs = try self.loadExtensionFunctions(family);
+
+        // Cache for future use
+        try self.extension_cache.put(allocator, family, funcs);
+
+        return self.extension_cache.getPtr(family).?;
+    }
+
+    fn loadExtensionFunctions(self: *SharedState, family: u16) !ExtensionFunctions {
+        _ = self;
+
+        // Create a temporary socket for the specified family
+        const sock = try net.socket(family, windows.SOCK.STREAM, windows.IPPROTO.TCP);
+        defer net.close(sock);
+
+        // Load AcceptEx
+        const acceptex = try loadWinsockExtension(LPFN_ACCEPTEX, sock, WSAID_ACCEPTEX);
+
+        // Load ConnectEx
+        const connectex = try loadWinsockExtension(LPFN_CONNECTEX, sock, WSAID_CONNECTEX);
+
+        return .{
+            .acceptex = acceptex,
+            .connectex = connectex,
+        };
     }
 };
 
@@ -78,7 +192,7 @@ queue_size: u16,
 pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16, shared_state: *SharedState) !void {
     // Acquire reference to shared state (creates IOCP handle if first loop)
     try shared_state.acquire();
-    errdefer shared_state.release();
+    errdefer shared_state.release(allocator);
 
     const entries = try allocator.alloc(windows.OVERLAPPED_ENTRY, queue_size);
     errdefer allocator.free(entries);
@@ -94,7 +208,7 @@ pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16, shared_s
 pub fn deinit(self: *Self) void {
     self.allocator.free(self.entries);
     // Release reference to shared state (closes IOCP handle if last loop)
-    self.shared_state.release();
+    self.shared_state.release(self.allocator);
 }
 
 pub fn wake(self: *Self) void {

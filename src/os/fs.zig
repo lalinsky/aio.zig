@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const posix = @import("posix.zig");
 
 const unexpectedError = @import("base.zig").unexpectedError;
+const Backend = @import("../backend.zig").Backend;
 
 pub const fd_t = switch (builtin.os.tag) {
     .windows => std.os.windows.HANDLE,
@@ -22,6 +23,9 @@ pub const FileOpenMode = enum {
 
 pub const FileOpenFlags = struct {
     mode: FileOpenMode = .read_only,
+    /// Enable non-blocking/async I/O (O_NONBLOCK on Unix, FILE_FLAG_OVERLAPPED on Windows).
+    /// Defaults to true if backend supports async file read/write.
+    nonblocking: bool = Backend.capabilities.file_read or Backend.capabilities.file_write,
 };
 
 pub const FileCreateFlags = struct {
@@ -29,6 +33,9 @@ pub const FileCreateFlags = struct {
     truncate: bool = false,
     exclusive: bool = false,
     mode: mode_t = 0o664,
+    /// Enable non-blocking/async I/O (O_NONBLOCK on Unix, FILE_FLAG_OVERLAPPED on Windows).
+    /// Defaults to true if backend supports async file read/write.
+    nonblocking: bool = Backend.capabilities.file_read or Backend.capabilities.file_write,
 };
 
 pub const FileOpenError = error{
@@ -163,13 +170,18 @@ pub fn openat(allocator: std.mem.Allocator, dir: fd_t, path: []const u8, flags: 
             .read_write => w.GENERIC_READ | w.GENERIC_WRITE,
         };
 
+        const file_flags: w.DWORD = if (flags.nonblocking)
+            w.FILE_ATTRIBUTE_NORMAL | w.FILE_FLAG_OVERLAPPED
+        else
+            w.FILE_ATTRIBUTE_NORMAL;
+
         const handle = w.kernel32.CreateFileW(
             path_w.span().ptr,
             access_mask,
             w.FILE_SHARE_READ | w.FILE_SHARE_WRITE | w.FILE_SHARE_DELETE,
             null,
             w.OPEN_EXISTING,
-            w.FILE_ATTRIBUTE_NORMAL,
+            file_flags,
             null,
         );
 
@@ -234,13 +246,18 @@ pub fn createat(allocator: std.mem.Allocator, dir: fd_t, path: []const u8, flags
         else
             w.OPEN_ALWAYS;
 
+        const file_flags: w.DWORD = if (flags.nonblocking)
+            w.FILE_ATTRIBUTE_NORMAL | w.FILE_FLAG_OVERLAPPED
+        else
+            w.FILE_ATTRIBUTE_NORMAL;
+
         const handle = w.kernel32.CreateFileW(
             path_w.span().ptr,
             access_mask,
             w.FILE_SHARE_READ | w.FILE_SHARE_WRITE | w.FILE_SHARE_DELETE,
             null,
             creation,
-            w.FILE_ATTRIBUTE_NORMAL,
+            file_flags,
             null,
         );
 

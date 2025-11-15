@@ -271,6 +271,21 @@ pub fn deinit(self: *Self) void {
     self.shared_state.release(self.allocator);
 }
 
+/// Post-process a file handle after it's been opened/created in the thread pool.
+/// Associates the file handle with the IOCP port for async I/O operations.
+pub fn postProcessFileHandle(self: *Self, handle: fs.fd_t) !void {
+    const iocp_result = try windows.CreateIoCompletionPort(
+        handle,
+        self.shared_state.iocp,
+        0,
+        0,
+    );
+
+    if (iocp_result != self.shared_state.iocp) {
+        return error.Unexpected;
+    }
+}
+
 // Dummy APC procedure - we just need to interrupt the wait
 fn wakeAPC(dwParam: windows.ULONG_PTR) callconv(.winapi) void {
     _ = dwParam;
@@ -396,29 +411,13 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
             };
         },
 
-        .file_open => {
-            const data = c.cast(FileOpen);
-            self.submitFileOpen(state, data) catch |err| {
-                c.setError(err);
-                state.markCompleted(c);
-            };
-        },
-
-        .file_create => {
-            const data = c.cast(FileCreate);
-            self.submitFileCreate(state, data) catch |err| {
-                c.setError(err);
-                state.markCompleted(c);
-            };
-        },
-
-        .file_close => {
-            const data = c.cast(FileClose);
-            self.submitFileClose(state, data) catch |err| {
-                c.setError(err);
-                state.markCompleted(c);
-            };
-        },
+        .file_open,
+        .file_create,
+        .file_close,
+        .file_sync,
+        .file_rename,
+        .file_delete,
+        => unreachable, // These are handled by thread pool (capabilities = false)
 
         .file_read => {
             const data = c.cast(FileRead);
@@ -431,30 +430,6 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
         .file_write => {
             const data = c.cast(FileWrite);
             self.submitFileWrite(state, data) catch |err| {
-                c.setError(err);
-                state.markCompleted(c);
-            };
-        },
-
-        .file_sync => {
-            const data = c.cast(FileSync);
-            self.submitFileSync(state, data) catch |err| {
-                c.setError(err);
-                state.markCompleted(c);
-            };
-        },
-
-        .file_rename => {
-            const data = c.cast(FileRename);
-            self.submitFileRename(state, data) catch |err| {
-                c.setError(err);
-                state.markCompleted(c);
-            };
-        },
-
-        .file_delete => {
-            const data = c.cast(FileDelete);
-            self.submitFileDelete(state, data) catch |err| {
                 c.setError(err);
                 state.markCompleted(c);
             };
@@ -762,6 +737,78 @@ fn submitConnect(self: *Self, state: *LoopState, data: *NetConnect) !void {
     // Operation will complete via IOCP (either immediate or async)
 }
 
+fn submitFileRead(self: *Self, state: *LoopState, data: *FileRead) !void {
+    _ = self;
+
+    // Initialize OVERLAPPED with file offset
+    data.c.internal.overlapped = std.mem.zeroes(windows.OVERLAPPED);
+    data.c.internal.overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.Offset = @truncate(data.offset);
+    data.c.internal.overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.OffsetHigh = @truncate(data.offset >> 32);
+
+    // ReadFile only supports a single buffer, so we read into the first iovec
+    // TODO: Handle multiple iovecs with multiple ReadFile calls
+    const buffer = data.buffer.iovecs[0];
+    var bytes_read: windows.DWORD = 0;
+
+    const result = windows.kernel32.ReadFile(
+        data.handle,
+        buffer.buf,
+        @intCast(buffer.len),
+        &bytes_read,
+        &data.c.internal.overlapped,
+    );
+
+    // When ReadFile succeeds (result == TRUE) OR returns ERROR_IO_PENDING,
+    // the completion will be posted to the IOCP port.
+    if (result == 0) {
+        const err = windows.kernel32.GetLastError();
+        if (err != .IO_PENDING) {
+            // Real error - complete immediately with error
+            log.err("ReadFile failed: {}", .{err});
+            data.c.setError(fs.errnoToFileReadError(@enumFromInt(@intFromEnum(err))));
+            state.markCompleted(&data.c);
+            return;
+        }
+    }
+    // Operation will complete via IOCP (either immediate or async)
+}
+
+fn submitFileWrite(self: *Self, state: *LoopState, data: *FileWrite) !void {
+    _ = self;
+
+    // Initialize OVERLAPPED with file offset
+    data.c.internal.overlapped = std.mem.zeroes(windows.OVERLAPPED);
+    data.c.internal.overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.Offset = @truncate(data.offset);
+    data.c.internal.overlapped.DUMMYUNIONNAME.DUMMYSTRUCTNAME.OffsetHigh = @truncate(data.offset >> 32);
+
+    // WriteFile only supports a single buffer, so we write from the first iovec
+    // TODO: Handle multiple iovecs with multiple WriteFile calls
+    const buffer = data.buffer.iovecs[0];
+    var bytes_written: windows.DWORD = 0;
+
+    const result = windows.kernel32.WriteFile(
+        data.handle,
+        buffer.buf,
+        @intCast(buffer.len),
+        &bytes_written,
+        &data.c.internal.overlapped,
+    );
+
+    // When WriteFile succeeds (result == TRUE) OR returns ERROR_IO_PENDING,
+    // the completion will be posted to the IOCP port.
+    if (result == 0) {
+        const err = windows.kernel32.GetLastError();
+        if (err != .IO_PENDING) {
+            // Real error - complete immediately with error
+            log.err("WriteFile failed: {}", .{err});
+            data.c.setError(fs.errnoToFileWriteError(@enumFromInt(@intFromEnum(err))));
+            state.markCompleted(&data.c);
+            return;
+        }
+    }
+    // Operation will complete via IOCP (either immediate or async)
+}
+
 /// Cancel a completion - infallible.
 /// Note: target.canceled is already set by loop.add() or loop.cancel() before this is called.
 pub fn cancel(self: *Self, state: *LoopState, target: *Completion) void {
@@ -1052,6 +1099,48 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
                 c.setError(net.errnoToSendError(err));
             } else {
                 c.setResult(.net_sendto, @intCast(bytes_transferred));
+            }
+
+            state.markCompleted(c);
+        },
+
+        .file_read => {
+            const data = c.cast(FileRead);
+            var bytes_transferred: windows.DWORD = 0;
+
+            const result = windows.kernel32.GetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+            );
+
+            if (result == 0) {
+                const err = windows.kernel32.GetLastError();
+                c.setError(fs.errnoToFileReadError(@enumFromInt(@intFromEnum(err))));
+            } else {
+                c.setResult(.file_read, @intCast(bytes_transferred));
+            }
+
+            state.markCompleted(c);
+        },
+
+        .file_write => {
+            const data = c.cast(FileWrite);
+            var bytes_transferred: windows.DWORD = 0;
+
+            const result = windows.kernel32.GetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+            );
+
+            if (result == 0) {
+                const err = windows.kernel32.GetLastError();
+                c.setError(fs.errnoToFileWriteError(@enumFromInt(@intFromEnum(err))));
+            } else {
+                c.setResult(.file_write, @intCast(bytes_transferred));
             }
 
             state.markCompleted(c);

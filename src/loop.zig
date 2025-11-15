@@ -631,66 +631,66 @@ pub const Loop = struct {
         self.state.active += 1;
 
         switch (completion.op) {
-            .file_open => {
+            .file_open => if (!Backend.capabilities.file_open) {
                 const file_open = completion.cast(FileOpen);
                 file_open.internal.allocator = self.allocator;
                 file_open.internal.work = Work.init(common.fileOpenWork, null);
                 file_open.internal.work.loop = self;
                 file_open.internal.work.linked = completion;
                 tp.submit(&file_open.internal.work);
-            },
-            .file_create => {
+            } else unreachable,
+            .file_create => if (!Backend.capabilities.file_create) {
                 const file_create = completion.cast(FileCreate);
                 file_create.internal.allocator = self.allocator;
                 file_create.internal.work = Work.init(common.fileCreateWork, null);
                 file_create.internal.work.loop = self;
                 file_create.internal.work.linked = completion;
                 tp.submit(&file_create.internal.work);
-            },
-            .file_close => {
+            } else unreachable,
+            .file_close => if (!Backend.capabilities.file_close) {
                 const file_close = completion.cast(FileClose);
                 file_close.internal.work = Work.init(common.fileCloseWork, null);
                 file_close.internal.work.loop = self;
                 file_close.internal.work.linked = completion;
                 tp.submit(&file_close.internal.work);
-            },
-            .file_read => {
+            } else unreachable,
+            .file_read => if (!Backend.capabilities.file_read) {
                 const file_read = completion.cast(FileRead);
                 file_read.internal.work = Work.init(common.fileReadWork, null);
                 file_read.internal.work.loop = self;
                 file_read.internal.work.linked = completion;
                 tp.submit(&file_read.internal.work);
-            },
-            .file_write => {
+            } else unreachable,
+            .file_write => if (!Backend.capabilities.file_write) {
                 const file_write = completion.cast(FileWrite);
                 file_write.internal.work = Work.init(common.fileWriteWork, null);
                 file_write.internal.work.loop = self;
                 file_write.internal.work.linked = completion;
                 tp.submit(&file_write.internal.work);
-            },
-            .file_sync => {
+            } else unreachable,
+            .file_sync => if (!Backend.capabilities.file_sync) {
                 const file_sync = completion.cast(FileSync);
                 file_sync.internal.work = Work.init(common.fileSyncWork, null);
                 file_sync.internal.work.loop = self;
                 file_sync.internal.work.linked = completion;
                 tp.submit(&file_sync.internal.work);
-            },
-            .file_rename => {
+            } else unreachable,
+            .file_rename => if (!Backend.capabilities.file_rename) {
                 const file_rename = completion.cast(FileRename);
                 file_rename.internal.allocator = self.allocator;
                 file_rename.internal.work = Work.init(common.fileRenameWork, null);
                 file_rename.internal.work.loop = self;
                 file_rename.internal.work.linked = completion;
                 tp.submit(&file_rename.internal.work);
-            },
-            .file_delete => {
+            } else unreachable,
+            .file_delete => if (!Backend.capabilities.file_delete) {
                 const file_delete = completion.cast(FileDelete);
                 file_delete.internal.allocator = self.allocator;
                 file_delete.internal.work = Work.init(common.fileDeleteWork, null);
                 file_delete.internal.work.loop = self;
                 file_delete.internal.work.linked = completion;
                 tp.submit(&file_delete.internal.work);
-            },
+            } else unreachable,
             else => unreachable,
         }
     }

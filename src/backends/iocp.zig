@@ -452,24 +452,23 @@ fn submitAccept(self: *Self, state: *LoopState, data: *NetAccept) !void {
         &data.c.internal.overlapped,
     );
 
-    if (result == windows.TRUE) {
-        // Accepted immediately (unlikely but possible)
-        data.c.setResult(.net_accept, accept_socket);
-        state.markCompleted(&data.c);
-    } else {
+    // Store accept_socket so we can retrieve it later (needed for both success and error cases)
+    data.result_private_do_not_touch = accept_socket;
+
+    // When AcceptEx succeeds (result == TRUE) OR returns WSA_IO_PENDING,
+    // the completion will be posted to the IOCP port.
+    if (result == windows.FALSE) {
         const err = windows.ws2_32.WSAGetLastError();
-        if (err == .WSA_IO_PENDING) {
-            // Async operation started - will complete via IOCP
-            // Store accept_socket so we can retrieve it in processCompletion
-            data.result_private_do_not_touch = accept_socket;
-            return;
-        } else {
-            // Immediate error
+        if (err != .WSA_IO_PENDING) {
+            // Real error - complete immediately with error
             net.close(accept_socket);
             log.err("AcceptEx failed: {}", .{err});
-            return error.Unexpected;
+            data.c.setError(error.Unexpected);
+            state.markCompleted(&data.c);
+            return;
         }
     }
+    // Operation will complete via IOCP (either immediate or async)
 }
 
 fn submitRecv(self: *Self, state: *LoopState, data: *NetRecv) !void {
@@ -673,22 +672,19 @@ fn submitConnect(self: *Self, state: *LoopState, data: *NetConnect) !void {
         &data.c.internal.overlapped,
     );
 
-    if (result == windows.TRUE) {
-        // Connected immediately (unlikely but possible)
-        data.c.setResult(.net_connect, {});
-        state.markCompleted(&data.c);
-    } else {
+    // When ConnectEx succeeds (result == TRUE) OR returns WSA_IO_PENDING,
+    // the completion will be posted to the IOCP port.
+    if (result == windows.FALSE) {
         const err = windows.ws2_32.WSAGetLastError();
-        if (err == .WSA_IO_PENDING) {
-            // Async operation started - will complete via IOCP
-            // Completion will be processed in poll()
-            return;
-        } else {
-            // Immediate error
+        if (err != .WSA_IO_PENDING) {
+            // Real error - complete immediately with error
             log.err("ConnectEx failed: {}", .{err});
-            return error.Unexpected;
+            data.c.setError(error.Unexpected);
+            state.markCompleted(&data.c);
+            return;
         }
     }
+    // Operation will complete via IOCP (either immediate or async)
 }
 
 /// Cancel a completion - infallible.

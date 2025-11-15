@@ -160,13 +160,13 @@ pub const SharedState = struct {
     }
 
     /// Get extension functions for a given address family, loading on-demand if needed
-    pub fn getExtensions(self: *SharedState, allocator: std.mem.Allocator, family: u16) !*const ExtensionFunctions {
+    pub fn getExtensions(self: *SharedState, allocator: std.mem.Allocator, family: u16) !ExtensionFunctions {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         // Check if already cached
         if (self.extension_cache.get(family)) |funcs| {
-            return &funcs;
+            return funcs;
         }
 
         // Not cached - load extension functions
@@ -175,7 +175,7 @@ pub const SharedState = struct {
         // Cache for future use
         try self.extension_cache.put(allocator, family, funcs);
 
-        return self.extension_cache.getPtr(family).?;
+        return funcs;
     }
 
     fn loadExtensionFunctions(self: *SharedState, family: u16) !ExtensionFunctions {
@@ -764,6 +764,7 @@ pub fn cancel(self: *Self, state: *LoopState, target: *Completion) void {
 }
 
 fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERLAPPED_ENTRY) void {
+    _ = self;
     // Get the OVERLAPPED pointer from the entry
     // Note: lpOverlapped can be null in error cases, despite Zig's type definition
     if (@intFromPtr(entry.lpOverlapped) == 0) {
@@ -785,11 +786,21 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
         .net_connect => {
             const data = c.cast(NetConnect);
 
-            // Check for errors
-            if (entry.dwNumberOfBytesTransferred == 0 and entry.Internal != 0) {
-                // Error occurred
-                log.err("ConnectEx failed with status: {}", .{entry.Internal});
-                c.setError(error.Unexpected);
+            // Use WSAGetOverlappedResult to get the proper error status
+            var bytes_transferred: windows.DWORD = 0;
+            var flags: windows.DWORD = 0;
+
+            const result = windows.ws2_32.WSAGetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+                &flags,
+            );
+
+            if (result == windows.FALSE) {
+                const err = windows.ws2_32.WSAGetLastError();
+                c.setError(net.errnoToConnectError(err));
             } else {
                 // Success - need to call setsockopt to update socket context
                 const SO_UPDATE_CONNECT_CONTEXT = 0x7010;
@@ -809,12 +820,23 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
         .net_accept => {
             const data = c.cast(NetAccept);
 
-            // Check for errors
-            if (entry.Internal != 0) {
+            // Use WSAGetOverlappedResult to get the proper error status
+            var bytes_transferred: windows.DWORD = 0;
+            var flags: windows.DWORD = 0;
+
+            const result = windows.ws2_32.WSAGetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+                &flags,
+            );
+
+            if (result == windows.FALSE) {
+                const err = windows.ws2_32.WSAGetLastError();
                 // Error occurred - close the accept socket
                 net.close(data.result_private_do_not_touch);
-                log.err("AcceptEx failed with status: {}", .{entry.Internal});
-                c.setError(error.Unexpected);
+                c.setError(net.errnoToAcceptError(err));
             } else {
                 // Success - need to call setsockopt to update socket context
                 const SO_UPDATE_ACCEPT_CONTEXT = 0x700B;
@@ -826,19 +848,8 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
                     @sizeOf(@TypeOf(data.handle)),
                 );
 
-                // Associate the accepted socket with IOCP
-                _ = windows.CreateIoCompletionPort(
-                    @ptrCast(data.result_private_do_not_touch),
-                    self.shared_state.iocp,
-                    0, // CompletionKey
-                    0, // NumberOfConcurrentThreads (0 = use default)
-                ) catch {
-                    // Failed to associate - close socket and fail
-                    net.close(data.result_private_do_not_touch);
-                    c.setError(error.Unexpected);
-                    state.markCompleted(c);
-                    return;
-                };
+                // Note: Socket was already associated with IOCP in submitAccept()
+                // No need to associate again here
 
                 c.setResult(.net_accept, data.result_private_do_not_touch);
             }
@@ -861,8 +872,7 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
 
             if (result == windows.FALSE) {
                 const err = windows.ws2_32.WSAGetLastError();
-                log.err("WSARecv completed with error: {}", .{err});
-                c.setError(error.Unexpected);
+                c.setError(net.errnoToRecvError(err));
             } else {
                 c.setResult(.net_recv, @intCast(bytes_transferred));
             }
@@ -885,8 +895,7 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
 
             if (result == windows.FALSE) {
                 const err = windows.ws2_32.WSAGetLastError();
-                log.err("WSASend completed with error: {}", .{err});
-                c.setError(error.Unexpected);
+                c.setError(net.errnoToSendError(err));
             } else {
                 c.setResult(.net_send, @intCast(bytes_transferred));
             }
@@ -909,8 +918,7 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
 
             if (result == windows.FALSE) {
                 const err = windows.ws2_32.WSAGetLastError();
-                log.err("WSARecvFrom completed with error: {}", .{err});
-                c.setError(error.Unexpected);
+                c.setError(net.errnoToRecvError(err));
             } else {
                 // addr_len was updated by WSARecvFrom during the async operation
                 c.setResult(.net_recvfrom, @intCast(bytes_transferred));
@@ -934,8 +942,7 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
 
             if (result == windows.FALSE) {
                 const err = windows.ws2_32.WSAGetLastError();
-                log.err("WSASendTo completed with error: {}", .{err});
-                c.setError(error.Unexpected);
+                c.setError(net.errnoToSendError(err));
             } else {
                 c.setResult(.net_sendto, @intCast(bytes_transferred));
             }

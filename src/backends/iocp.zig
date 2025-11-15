@@ -18,6 +18,9 @@ const NetRecvFrom = @import("../completion.zig").NetRecvFrom;
 const NetSendTo = @import("../completion.zig").NetSendTo;
 const NetClose = @import("../completion.zig").NetClose;
 const NetShutdown = @import("../completion.zig").NetShutdown;
+const FileRead = @import("../completion.zig").FileRead;
+const FileWrite = @import("../completion.zig").FileWrite;
+const FileSync = @import("../completion.zig").FileSync;
 
 // Windows API functions not in std
 extern "kernel32" fn QueueUserAPC(
@@ -688,11 +691,80 @@ fn submitConnect(self: *Self, state: *LoopState, data: *NetConnect) !void {
     }
 }
 
+/// Cancel a completion - infallible.
+/// Note: target.canceled is already set by loop.add() or loop.cancel() before this is called.
 pub fn cancel(self: *Self, state: *LoopState, target: *Completion) void {
     _ = self;
     _ = state;
-    _ = target;
-    @panic("TODO: cancel()");
+
+    switch (target.state) {
+        .new => {
+            // UNREACHABLE: When cancel is added via loop.add() and target.state == .new,
+            // loop.add() handles it directly and doesn't call backend.cancel().
+            unreachable;
+        },
+        .running => {
+            // Target is executing. Use CancelIoEx to cancel the async operation.
+            // After cancellation, the operation will complete with ERROR_OPERATION_ABORTED
+            // and we'll receive the completion via IOCP.
+
+            const handle = switch (target.op) {
+                .net_connect,
+                .net_accept,
+                .net_recv,
+                .net_send,
+                .net_recvfrom,
+                .net_sendto,
+                => blk: {
+                    // Get socket handle from the completion
+                    const h = switch (target.op) {
+                        .net_connect => target.cast(NetConnect).handle,
+                        .net_accept => target.cast(NetAccept).handle,
+                        .net_recv => target.cast(NetRecv).handle,
+                        .net_send => target.cast(NetSend).handle,
+                        .net_recvfrom => target.cast(NetRecvFrom).handle,
+                        .net_sendto => target.cast(NetSendTo).handle,
+                        else => unreachable,
+                    };
+                    break :blk @as(windows.HANDLE, @ptrCast(h));
+                },
+                .file_read,
+                .file_write,
+                .file_sync,
+                => blk: {
+                    // Get file handle from the completion
+                    const h = switch (target.op) {
+                        .file_read => target.cast(FileRead).handle,
+                        .file_write => target.cast(FileWrite).handle,
+                        .file_sync => target.cast(FileSync).handle,
+                        else => unreachable,
+                    };
+                    break :blk h;
+                },
+                else => {
+                    // Operations that can't be canceled or are synchronous
+                    // Just mark them as completed (they'll finish naturally)
+                    return;
+                },
+            };
+
+            // Cancel the I/O operation
+            const result = windows.kernel32.CancelIoEx(handle, &target.internal.overlapped);
+            if (result == 0) {
+                const err = windows.kernel32.GetLastError();
+                // ERROR_NOT_FOUND means the operation already completed - that's fine
+                if (err != .NOT_FOUND) {
+                    log.warn("CancelIoEx failed: {}", .{err});
+                }
+            }
+            // The completion will be posted to IOCP with ERROR_OPERATION_ABORTED
+            // When we process it, we'll mark the target as completed
+        },
+        .completed, .dead => {
+            // Already completed or dead - nothing to cancel
+            return;
+        },
+    }
 }
 
 fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERLAPPED_ENTRY) void {

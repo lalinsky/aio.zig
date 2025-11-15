@@ -13,6 +13,16 @@ const NetAccept = @import("../completion.zig").NetAccept;
 const NetClose = @import("../completion.zig").NetClose;
 const NetShutdown = @import("../completion.zig").NetShutdown;
 
+// Windows API functions not in std
+extern "kernel32" fn QueueUserAPC(
+    pfnAPC: *const fn (windows.ULONG_PTR) callconv(.winapi) void,
+    hThread: windows.HANDLE,
+    dwData: windows.ULONG_PTR,
+) callconv(.winapi) windows.DWORD;
+
+// WAIT_IO_COMPLETION is returned when an alertable wait is interrupted by an APC
+const WAIT_IO_COMPLETION: windows.Win32Error = @enumFromInt(0xC0);
+
 // Winsock extension function GUIDs
 const WSAID_ACCEPTEX = windows.GUID{
     .Data1 = 0xb5367df1,
@@ -197,6 +207,7 @@ allocator: std.mem.Allocator,
 shared_state: *SharedState,
 entries: []windows.OVERLAPPED_ENTRY,
 queue_size: u16,
+thread_handle: windows.HANDLE,
 
 pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16, shared_state: *SharedState) !void {
     // Acquire reference to shared state (creates IOCP handle if first loop)
@@ -206,28 +217,60 @@ pub fn init(self: *Self, allocator: std.mem.Allocator, queue_size: u16, shared_s
     const entries = try allocator.alloc(windows.OVERLAPPED_ENTRY, queue_size);
     errdefer allocator.free(entries);
 
+    // Duplicate current thread handle for wake support
+    const pseudo_handle = windows.GetCurrentThread();
+    var thread_handle: windows.HANDLE = undefined;
+    const dup_result = windows.kernel32.DuplicateHandle(
+        windows.GetCurrentProcess(),
+        pseudo_handle,
+        windows.GetCurrentProcess(),
+        &thread_handle,
+        0,
+        windows.FALSE,
+        windows.DUPLICATE_SAME_ACCESS,
+    );
+    if (dup_result == 0) {
+        return error.Unexpected;
+    }
+    errdefer windows.CloseHandle(thread_handle);
+
     self.* = .{
         .allocator = allocator,
         .shared_state = shared_state,
         .entries = entries,
         .queue_size = queue_size,
+        .thread_handle = thread_handle,
     };
 }
 
 pub fn deinit(self: *Self) void {
+    // Close thread handle
+    windows.CloseHandle(self.thread_handle);
+
     self.allocator.free(self.entries);
     // Release reference to shared state (closes IOCP handle if last loop)
     self.shared_state.release(self.allocator);
 }
 
+// Dummy APC procedure - we just need to interrupt the wait
+fn wakeAPC(dwParam: windows.ULONG_PTR) callconv(.winapi) void {
+    _ = dwParam;
+    // No-op - just waking up the thread
+}
+
 pub fn wake(self: *Self) void {
-    _ = self;
-    @panic("TODO: wake()");
+    // Queue an APC to wake the thread
+    const result = QueueUserAPC(wakeAPC, self.thread_handle, 0);
+    if (result == 0) {
+        log.err("QueueUserAPC failed: {}", .{windows.kernel32.GetLastError()});
+    } else {
+        log.debug("QueueUserAPC succeeded", .{});
+    }
 }
 
 pub fn wakeFromAnywhere(self: *Self) void {
-    _ = self;
-    @panic("TODO: wakeFromAnywhere()");
+    // Same as wake() - QueueUserAPC is thread-safe
+    self.wake();
 }
 
 pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
@@ -547,13 +590,22 @@ pub fn poll(self: *Self, state: *LoopState, timeout_ms: u64) !bool {
         @intCast(self.entries.len),
         &num_entries,
         timeout,
-        windows.FALSE, // Not alertable
+        windows.TRUE, // Alertable - allows QueueUserAPC to wake us
     );
 
     if (result == windows.FALSE) {
         const err = windows.kernel32.GetLastError();
         switch (err) {
-            .WAIT_TIMEOUT => return true, // Timed out
+            .WAIT_TIMEOUT => {
+                log.debug("poll() timed out", .{});
+                return true; // Timed out
+            },
+            WAIT_IO_COMPLETION => {
+                log.debug("poll() woken by APC", .{});
+                // Process async handles that triggered the wake
+                state.loop.processAsyncHandles();
+                return false; // Woken by APC (wake() call)
+            },
             else => {
                 log.err("GetQueuedCompletionStatusEx failed: {}", .{err});
                 return error.Unexpected;

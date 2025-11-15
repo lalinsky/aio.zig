@@ -848,6 +848,38 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
                     @sizeOf(@TypeOf(data.handle)),
                 );
 
+                // Parse the address buffer to get the peer address
+                if (data.addr) |user_addr| {
+                    const addr_size: u32 = @sizeOf(windows.ws2_32.sockaddr.in6) + 16;
+                    var local_addr: *windows.ws2_32.sockaddr = undefined;
+                    var local_addr_len: i32 = undefined;
+                    var remote_addr: *windows.ws2_32.sockaddr = undefined;
+                    var remote_addr_len: i32 = undefined;
+
+                    windows.ws2_32.GetAcceptExSockaddrs(
+                        &data.internal.addr_buffer,
+                        0, // dwReceiveDataLength
+                        addr_size,
+                        addr_size,
+                        &local_addr,
+                        &local_addr_len,
+                        &remote_addr,
+                        &remote_addr_len,
+                    );
+
+                    // Copy remote address to user buffer, handling truncation
+                    if (data.addr_len) |user_len_ptr| {
+                        const remote_len: u32 = @intCast(remote_addr_len);
+                        const user_len: u32 = @intCast(user_len_ptr.*);
+                        const copy_len: usize = @min(remote_len, user_len);
+                        @memcpy(
+                            @as([*]u8, @ptrCast(user_addr))[0..copy_len],
+                            @as([*]const u8, @ptrCast(remote_addr))[0..copy_len],
+                        );
+                        user_len_ptr.* = @intCast(remote_len);
+                    }
+                }
+
                 // Note: Socket was already associated with IOCP in submitAccept()
                 // No need to associate again here
 

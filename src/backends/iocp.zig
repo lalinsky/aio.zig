@@ -4,12 +4,18 @@ const net = @import("../os/net.zig");
 const common = @import("common.zig");
 const LoopState = @import("../loop.zig").LoopState;
 const Completion = @import("../completion.zig").Completion;
+const ReadBuf = @import("../buf.zig").ReadBuf;
+const WriteBuf = @import("../buf.zig").WriteBuf;
 const Op = @import("../completion.zig").Op;
 const NetOpen = @import("../completion.zig").NetOpen;
 const NetBind = @import("../completion.zig").NetBind;
 const NetListen = @import("../completion.zig").NetListen;
 const NetConnect = @import("../completion.zig").NetConnect;
 const NetAccept = @import("../completion.zig").NetAccept;
+const NetRecv = @import("../completion.zig").NetRecv;
+const NetSend = @import("../completion.zig").NetSend;
+const NetRecvFrom = @import("../completion.zig").NetRecvFrom;
+const NetSendTo = @import("../completion.zig").NetSendTo;
 const NetClose = @import("../completion.zig").NetClose;
 const NetShutdown = @import("../completion.zig").NetShutdown;
 
@@ -98,6 +104,7 @@ pub const NetAcceptData = struct {
     // Buffer size: sizeof(sockaddr_in6) + 16 for each address
     addr_buffer: [128]u8 = undefined,
 };
+
 
 const ExtensionFunctions = struct {
     acceptex: LPFN_ACCEPTEX,
@@ -345,10 +352,38 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
             };
         },
 
-        .net_recv,
-        .net_send,
-        .net_recvfrom,
-        .net_sendto,
+        .net_recv => {
+            const data = c.cast(NetRecv);
+            self.submitRecv(state, data) catch |err| {
+                c.setError(err);
+                state.markCompleted(c);
+            };
+        },
+
+        .net_send => {
+            const data = c.cast(NetSend);
+            self.submitSend(state, data) catch |err| {
+                c.setError(err);
+                state.markCompleted(c);
+            };
+        },
+
+        .net_recvfrom => {
+            const data = c.cast(NetRecvFrom);
+            self.submitRecvFrom(state, data) catch |err| {
+                c.setError(err);
+                state.markCompleted(c);
+            };
+        },
+
+        .net_sendto => {
+            const data = c.cast(NetSendTo);
+            self.submitSendTo(state, data) catch |err| {
+                c.setError(err);
+                state.markCompleted(c);
+            };
+        },
+
         .file_open,
         .file_create,
         .file_close,
@@ -436,6 +471,162 @@ fn submitAccept(self: *Self, state: *LoopState, data: *NetAccept) !void {
     }
 }
 
+fn submitRecv(self: *Self, state: *LoopState, data: *NetRecv) !void {
+    _ = self;
+
+    // Initialize OVERLAPPED
+    data.c.internal.overlapped = std.mem.zeroes(windows.OVERLAPPED);
+
+    // iovecs are already WSABUF on Windows
+    const wsabufs = data.buffers.iovecs;
+
+    var bytes_received: windows.DWORD = 0;
+    var flags: windows.DWORD = 0; // TODO: map data.flags to Windows flags
+
+    const result = windows.ws2_32.WSARecv(
+        data.handle,
+        @ptrCast(wsabufs.ptr),
+        @intCast(wsabufs.len),
+        &bytes_received,
+        &flags,
+        &data.c.internal.overlapped,
+        null, // No completion routine
+    );
+
+    if (result == 0) {
+        // Completed immediately
+        data.c.setResult(.net_recv, @intCast(bytes_received));
+        state.markCompleted(&data.c);
+    } else {
+        const err = windows.ws2_32.WSAGetLastError();
+        if (err == .WSA_IO_PENDING) {
+            // Async operation started - will complete via IOCP
+            return;
+        } else {
+            log.err("WSARecv failed: {}", .{err});
+            return error.Unexpected;
+        }
+    }
+}
+
+fn submitSend(self: *Self, state: *LoopState, data: *NetSend) !void {
+    _ = self;
+
+    // Initialize OVERLAPPED
+    data.c.internal.overlapped = std.mem.zeroes(windows.OVERLAPPED);
+
+    // iovecs are already WSABUF on Windows (need to cast away const)
+    const wsabufs = data.buffer.iovecs;
+
+    var bytes_sent: windows.DWORD = 0;
+    const flags: windows.DWORD = 0; // TODO: map data.flags to Windows flags
+
+    const result = windows.ws2_32.WSASend(
+        data.handle,
+        @ptrCast(@constCast(wsabufs.ptr)),
+        @intCast(wsabufs.len),
+        &bytes_sent,
+        flags,
+        &data.c.internal.overlapped,
+        null, // No completion routine
+    );
+
+    if (result == 0) {
+        // Completed immediately
+        data.c.setResult(.net_send, @intCast(bytes_sent));
+        state.markCompleted(&data.c);
+    } else {
+        const err = windows.ws2_32.WSAGetLastError();
+        if (err == .WSA_IO_PENDING) {
+            // Async operation started - will complete via IOCP
+            return;
+        } else {
+            log.err("WSASend failed: {}", .{err});
+            return error.Unexpected;
+        }
+    }
+}
+
+fn submitRecvFrom(self: *Self, state: *LoopState, data: *NetRecvFrom) !void {
+    _ = self;
+
+    // Initialize OVERLAPPED
+    data.c.internal.overlapped = std.mem.zeroes(windows.OVERLAPPED);
+
+    // iovecs are already WSABUF on Windows - use first one
+    var wsabuf = data.buffer.iovecs[0];
+
+    var bytes_received: windows.DWORD = 0;
+    var flags: windows.DWORD = 0;
+
+    const result = windows.ws2_32.WSARecvFrom(
+        data.handle,
+        @ptrCast(&wsabuf),
+        1,
+        &bytes_received,
+        &flags,
+        if (data.addr) |addr| @ptrCast(addr) else null,
+        if (data.addr_len) |len| len else null,
+        &data.c.internal.overlapped,
+        null, // No completion routine
+    );
+
+    if (result == 0) {
+        // Completed immediately
+        data.c.setResult(.net_recvfrom, @intCast(bytes_received));
+        state.markCompleted(&data.c);
+    } else {
+        const err = windows.ws2_32.WSAGetLastError();
+        if (err == .WSA_IO_PENDING) {
+            // addr_len will be updated by WSARecvFrom when the operation completes
+            return;
+        } else {
+            log.err("WSARecvFrom failed: {}", .{err});
+            return error.Unexpected;
+        }
+    }
+}
+
+fn submitSendTo(self: *Self, state: *LoopState, data: *NetSendTo) !void {
+    _ = self;
+
+    // Initialize OVERLAPPED
+    data.c.internal.overlapped = std.mem.zeroes(windows.OVERLAPPED);
+
+    // iovecs are already WSABUF on Windows - use first one (cast away const)
+    var wsabuf: windows.ws2_32.WSABUF = @constCast(&data.buffer.iovecs[0]).*;
+
+    var bytes_sent: windows.DWORD = 0;
+    const flags: windows.DWORD = 0;
+
+    const result = windows.ws2_32.WSASendTo(
+        data.handle,
+        @ptrCast(&wsabuf),
+        1,
+        &bytes_sent,
+        flags,
+        @ptrCast(data.addr),
+        @intCast(data.addr_len),
+        &data.c.internal.overlapped,
+        null, // No completion routine
+    );
+
+    if (result == 0) {
+        // Completed immediately
+        data.c.setResult(.net_sendto, @intCast(bytes_sent));
+        state.markCompleted(&data.c);
+    } else {
+        const err = windows.ws2_32.WSAGetLastError();
+        if (err == .WSA_IO_PENDING) {
+            // Async operation started - will complete via IOCP
+            return;
+        } else {
+            log.err("WSASendTo failed: {}", .{err});
+            return error.Unexpected;
+        }
+    }
+}
+
 fn submitConnect(self: *Self, state: *LoopState, data: *NetConnect) !void {
     // Get address family from the target address
     const family: u16 = @as(*const windows.ws2_32.sockaddr, @ptrCast(@alignCast(data.addr))).family;
@@ -510,8 +701,6 @@ pub fn cancel(self: *Self, state: *LoopState, target: *Completion) void {
 }
 
 fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERLAPPED_ENTRY) void {
-    _ = self;
-
     // Get the OVERLAPPED pointer from the entry
     const overlapped = entry.lpOverlapped;
 
@@ -566,7 +755,119 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
                     @ptrCast(&data.handle),
                     @sizeOf(@TypeOf(data.handle)),
                 );
+
+                // Associate the accepted socket with IOCP
+                _ = windows.CreateIoCompletionPort(
+                    @ptrCast(data.result_private_do_not_touch),
+                    self.shared_state.iocp,
+                    0, // CompletionKey
+                    0, // NumberOfConcurrentThreads (0 = use default)
+                ) catch {
+                    // Failed to associate - close socket and fail
+                    net.close(data.result_private_do_not_touch);
+                    c.setError(error.Unexpected);
+                    state.markCompleted(c);
+                    return;
+                };
+
                 c.setResult(.net_accept, data.result_private_do_not_touch);
+            }
+
+            state.markCompleted(c);
+        },
+
+        .net_recv => {
+            const data = c.cast(NetRecv);
+            var bytes_transferred: windows.DWORD = 0;
+            var flags: windows.DWORD = 0;
+
+            const result = windows.ws2_32.WSAGetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+                &flags,
+            );
+
+            if (result == windows.FALSE) {
+                const err = windows.ws2_32.WSAGetLastError();
+                log.err("WSARecv completed with error: {}", .{err});
+                c.setError(error.Unexpected);
+            } else {
+                c.setResult(.net_recv, @intCast(bytes_transferred));
+            }
+
+            state.markCompleted(c);
+        },
+
+        .net_send => {
+            const data = c.cast(NetSend);
+            var bytes_transferred: windows.DWORD = 0;
+            var flags: windows.DWORD = 0;
+
+            const result = windows.ws2_32.WSAGetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+                &flags,
+            );
+
+            if (result == windows.FALSE) {
+                const err = windows.ws2_32.WSAGetLastError();
+                log.err("WSASend completed with error: {}", .{err});
+                c.setError(error.Unexpected);
+            } else {
+                c.setResult(.net_send, @intCast(bytes_transferred));
+            }
+
+            state.markCompleted(c);
+        },
+
+        .net_recvfrom => {
+            const data = c.cast(NetRecvFrom);
+            var bytes_transferred: windows.DWORD = 0;
+            var flags: windows.DWORD = 0;
+
+            const result = windows.ws2_32.WSAGetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+                &flags,
+            );
+
+            if (result == windows.FALSE) {
+                const err = windows.ws2_32.WSAGetLastError();
+                log.err("WSARecvFrom completed with error: {}", .{err});
+                c.setError(error.Unexpected);
+            } else {
+                // addr_len was updated by WSARecvFrom during the async operation
+                c.setResult(.net_recvfrom, @intCast(bytes_transferred));
+            }
+
+            state.markCompleted(c);
+        },
+
+        .net_sendto => {
+            const data = c.cast(NetSendTo);
+            var bytes_transferred: windows.DWORD = 0;
+            var flags: windows.DWORD = 0;
+
+            const result = windows.ws2_32.WSAGetOverlappedResult(
+                data.handle,
+                &data.c.internal.overlapped,
+                &bytes_transferred,
+                windows.FALSE,
+                &flags,
+            );
+
+            if (result == windows.FALSE) {
+                const err = windows.ws2_32.WSAGetLastError();
+                log.err("WSASendTo completed with error: {}", .{err});
+                c.setError(error.Unexpected);
+            } else {
+                c.setResult(.net_sendto, @intCast(bytes_transferred));
             }
 
             state.markCompleted(c);

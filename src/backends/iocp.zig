@@ -926,14 +926,22 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
             } else {
                 // Success - need to call setsockopt to update socket context
                 const SO_UPDATE_CONNECT_CONTEXT = 0x7010;
-                _ = windows.ws2_32.setsockopt(
+                const setsockopt_result = windows.ws2_32.setsockopt(
                     data.handle,
                     windows.ws2_32.SOL.SOCKET,
                     SO_UPDATE_CONNECT_CONTEXT,
                     null,
                     0,
                 );
-                c.setResult(.net_connect, {});
+
+                if (setsockopt_result == windows.ws2_32.SOCKET_ERROR) {
+                    // setsockopt failed - close the socket and report error
+                    const err = windows.ws2_32.WSAGetLastError();
+                    net.close(data.handle);
+                    c.setError(net.errnoToConnectError(err));
+                } else {
+                    c.setResult(.net_connect, {});
+                }
             }
 
             state.markCompleted(c);
@@ -962,7 +970,7 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
             } else {
                 // Success - need to call setsockopt to update socket context
                 const SO_UPDATE_ACCEPT_CONTEXT = 0x700B;
-                _ = windows.ws2_32.setsockopt(
+                const setsockopt_result = windows.ws2_32.setsockopt(
                     data.result_private_do_not_touch,
                     windows.ws2_32.SOL.SOCKET,
                     SO_UPDATE_ACCEPT_CONTEXT,
@@ -970,42 +978,49 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
                     @sizeOf(@TypeOf(data.handle)),
                 );
 
-                // Parse the address buffer to get the peer address
-                if (data.addr) |user_addr| {
-                    const addr_size: u32 = @sizeOf(windows.ws2_32.sockaddr.in6) + 16;
-                    var local_addr: *windows.ws2_32.sockaddr = undefined;
-                    var local_addr_len: i32 = undefined;
-                    var remote_addr: *windows.ws2_32.sockaddr = undefined;
-                    var remote_addr_len: i32 = undefined;
+                if (setsockopt_result == windows.ws2_32.SOCKET_ERROR) {
+                    // setsockopt failed - close the socket and report error
+                    const err = windows.ws2_32.WSAGetLastError();
+                    net.close(data.result_private_do_not_touch);
+                    c.setError(net.errnoToAcceptError(err));
+                } else {
+                    // Parse the address buffer to get the peer address
+                    if (data.addr) |user_addr| {
+                        const addr_size: u32 = @sizeOf(windows.ws2_32.sockaddr.in6) + 16;
+                        var local_addr: *windows.ws2_32.sockaddr = undefined;
+                        var local_addr_len: i32 = undefined;
+                        var remote_addr: *windows.ws2_32.sockaddr = undefined;
+                        var remote_addr_len: i32 = undefined;
 
-                    windows.ws2_32.GetAcceptExSockaddrs(
-                        &data.internal.addr_buffer,
-                        0, // dwReceiveDataLength
-                        addr_size,
-                        addr_size,
-                        &local_addr,
-                        &local_addr_len,
-                        &remote_addr,
-                        &remote_addr_len,
-                    );
-
-                    // Copy remote address to user buffer, handling truncation
-                    if (data.addr_len) |user_len_ptr| {
-                        const remote_len: u32 = @intCast(remote_addr_len);
-                        const user_len: u32 = @intCast(user_len_ptr.*);
-                        const copy_len: usize = @min(remote_len, user_len);
-                        @memcpy(
-                            @as([*]u8, @ptrCast(user_addr))[0..copy_len],
-                            @as([*]const u8, @ptrCast(remote_addr))[0..copy_len],
+                        windows.ws2_32.GetAcceptExSockaddrs(
+                            &data.internal.addr_buffer,
+                            0, // dwReceiveDataLength
+                            addr_size,
+                            addr_size,
+                            &local_addr,
+                            &local_addr_len,
+                            &remote_addr,
+                            &remote_addr_len,
                         );
-                        user_len_ptr.* = @intCast(remote_len);
+
+                        // Copy remote address to user buffer, handling truncation
+                        if (data.addr_len) |user_len_ptr| {
+                            const remote_len: u32 = @intCast(remote_addr_len);
+                            const user_len: u32 = @intCast(user_len_ptr.*);
+                            const copy_len: usize = @min(remote_len, user_len);
+                            @memcpy(
+                                @as([*]u8, @ptrCast(user_addr))[0..copy_len],
+                                @as([*]const u8, @ptrCast(remote_addr))[0..copy_len],
+                            );
+                            user_len_ptr.* = @intCast(remote_len);
+                        }
                     }
+
+                    // Note: Socket was already associated with IOCP in submitAccept()
+                    // No need to associate again here
+
+                    c.setResult(.net_accept, data.result_private_do_not_touch);
                 }
-
-                // Note: Socket was already associated with IOCP in submitAccept()
-                // No need to associate again here
-
-                c.setResult(.net_accept, data.result_private_do_not_touch);
             }
 
             state.markCompleted(c);

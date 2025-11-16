@@ -705,6 +705,11 @@ fn submitConnect(self: *Self, state: *LoopState, data: *NetConnect) !void {
         addr.port = 0;
         addr.addr = [_]u8{0} ** 16; // IN6ADDR_ANY
         bind_addr_len = @sizeOf(windows.ws2_32.sockaddr.in6);
+    } else if (family == windows.ws2_32.AF.UNIX) {
+        const addr: *windows.ws2_32.sockaddr.un = @ptrCast(&bind_addr_buf);
+        addr.family = windows.ws2_32.AF.UNIX;
+        addr.path = [_]u8{0} ** 108; // Empty path for wildcard bind
+        bind_addr_len = @sizeOf(windows.ws2_32.sockaddr.un);
     } else {
         return error.Unexpected;
     }

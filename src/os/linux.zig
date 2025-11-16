@@ -34,7 +34,7 @@ pub fn io_uring_enter2(
         argsz,
     );
 
-    return switch (linux.E.init(rc)) {
+    return switch (linux.errno(rc)) {
         .SUCCESS => @intCast(rc),
         .TIME => 0, // Timeout expired - this is normal, return 0 completions
         .AGAIN => error.WouldBlock,

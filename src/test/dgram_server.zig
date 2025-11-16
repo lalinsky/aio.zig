@@ -237,7 +237,7 @@ pub fn EchoClient(comptime domain: net.Domain, comptime sockaddr: type) type {
                     .path = undefined,
                 };
                 const timestamp = time.now(.realtime);
-                _ = std.fmt.bufPrintZ(&self.client_addr.path, "/tmp/aio-dgram-client-{d}.sock", .{timestamp}) catch unreachable;
+                _ = std.fmt.bufPrintZ(&self.client_addr.path, "aio-dgram-client-{d}.sock", .{timestamp}) catch unreachable;
                 self.client_addr_len = @sizeOf(sockaddr);
             }
 

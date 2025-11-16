@@ -41,6 +41,19 @@ const windows_NI = if (builtin.os.tag == .windows) packed struct(i32) {
     _: i27 = 0,
 } else void;
 
+// Extern declarations for platforms where std.c has incomplete definitions
+const posix_extern = struct {
+    pub extern "c" fn getnameinfo(
+        noalias addr: *const std.c.sockaddr,
+        addrlen: std.c.socklen_t,
+        noalias host: ?[*]u8,
+        hostlen: std.c.socklen_t,
+        noalias serv: ?[*]u8,
+        servlen: std.c.socklen_t,
+        flags: c_int,
+    ) callconv(.c) c_int;
+};
+
 pub const has_unix_sockets = switch (builtin.os.tag) {
     .windows => builtin.os.version_range.windows.isAtLeast(.win10_rs4) orelse false,
     .wasi => false,
@@ -1454,7 +1467,8 @@ pub fn getnameinfo(
                 return errnoToGetNameInfoError(rc);
             }
         },
-        else => {
+        .linux, .emscripten, .illumos, .serenity => {
+            // Platforms where std.c.NI is properly defined
             const rc = std.c.getnameinfo(
                 addr,
                 addr_len,
@@ -1467,6 +1481,22 @@ pub fn getnameinfo(
             const rc_int: c_int = @intFromEnum(rc);
             if (rc_int != 0) {
                 return errnoToGetNameInfoError(rc);
+            }
+        },
+        else => {
+            // Platforms where std.c.NI is void - use our own extern
+            const rc = posix_extern.getnameinfo(
+                addr,
+                addr_len,
+                if (host) |h| h.ptr else null,
+                if (host) |h| @intCast(h.len) else 0,
+                if (service) |s| s.ptr else null,
+                if (service) |s| @intCast(s.len) else 0,
+                @bitCast(flags),
+            );
+            if (rc != 0) {
+                const eai_err: std.c.EAI = @enumFromInt(rc);
+                return errnoToGetNameInfoError(eai_err);
             }
         },
     }

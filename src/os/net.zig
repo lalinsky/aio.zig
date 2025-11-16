@@ -1366,7 +1366,62 @@ fn errnoToGetAddrInfoError(err: anytype) GetAddrInfoError {
 
 pub const NI = switch (builtin.os.tag) {
     .windows => windows_NI,
-    else => std.c.NI,
+    .linux, .emscripten => packed struct(u32) {
+        NUMERICHOST: bool = false,
+        NUMERICSERV: bool = false,
+        NOFQDN: bool = false,
+        NAMEREQD: bool = false,
+        DGRAM: bool = false,
+        _5: u3 = 0,
+        NUMERICSCOPE: bool = false,
+        _: u23 = 0,
+    },
+    .illumos => packed struct(u32) {
+        NOFQDN: bool = false,
+        NUMERICHOST: bool = false,
+        NAMEREQD: bool = false,
+        NUMERICSERV: bool = false,
+        DGRAM: bool = false,
+        WITHSCOPEID: bool = false,
+        NUMERICSCOPE: bool = false,
+        _: u25 = 0,
+    },
+    .serenity => packed struct(c_int) {
+        NUMERICHOST: bool = false,
+        NUMERICSERV: bool = false,
+        NAMEREQD: bool = false,
+        NOFQDN: bool = false,
+        DGRAM: bool = false,
+        _: std.meta.Int(.unsigned, @bitSizeOf(c_int) - 5) = 0,
+    },
+    .freebsd, .haiku => packed struct(u32) {
+        NOFQDN: bool = false,
+        NUMERICHOST: bool = false,
+        NAMEREQD: bool = false,
+        NUMERICSERV: bool = false,
+        DGRAM: bool = false,
+        NUMERICSCOPE: bool = false,
+        _: u26 = 0,
+    },
+    .dragonfly, .netbsd => packed struct(u32) {
+        NOFQDN: bool = false,
+        NUMERICHOST: bool = false,
+        NAMEREQD: bool = false,
+        NUMERICSERV: bool = false,
+        DGRAM: bool = false,
+        _5: u1 = 0,
+        NUMERICSCOPE: bool = false,
+        _: u25 = 0,
+    },
+    .openbsd => packed struct(u32) {
+        NUMERICHOST: bool = false,
+        NUMERICSERV: bool = false,
+        NOFQDN: bool = false,
+        NAMEREQD: bool = false,
+        DGRAM: bool = false,
+        _: u27 = 0,
+    },
+    else => void,
 };
 
 pub const GetNameInfoError = error{
@@ -1407,7 +1462,7 @@ pub fn getnameinfo(
                 if (host) |h| @intCast(h.len) else 0,
                 if (service) |s| s.ptr else null,
                 if (service) |s| @intCast(s.len) else 0,
-                flags,
+                @bitCast(flags),
             );
             const rc_int: c_int = @intFromEnum(rc);
             if (rc_int != 0) {

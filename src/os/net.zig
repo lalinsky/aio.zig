@@ -7,6 +7,40 @@ const unexpectedError = @import("base.zig").unexpectedError;
 
 const log = std.log.scoped(.zio_socket);
 
+// Windows addrinfo definitions (removed from std.os.windows.ws2_32 in Zig 0.16)
+const windows_addrinfo = if (builtin.os.tag == .windows) extern struct {
+    flags: i32,
+    family: i32,
+    socktype: i32,
+    protocol: i32,
+    addrlen: usize,
+    canonname: ?[*:0]u8,
+    addr: ?*std.os.windows.ws2_32.sockaddr,
+    next: ?*windows_addrinfo,
+} else void;
+
+const windows_extern = if (builtin.os.tag == .windows) struct {
+    pub extern "ws2_32" fn getaddrinfo(
+        pNodeName: ?[*:0]const u8,
+        pServiceName: ?[*:0]const u8,
+        pHints: ?*const windows_addrinfo,
+        ppResult: *?*windows_addrinfo,
+    ) callconv(std.os.windows.WINAPI) i32;
+
+    pub extern "ws2_32" fn freeaddrinfo(
+        pAddrInfo: *windows_addrinfo,
+    ) callconv(std.os.windows.WINAPI) void;
+} else struct {};
+
+const windows_NI = if (builtin.os.tag == .windows) packed struct(i32) {
+    NOFQDN: bool = false,
+    NUMERICHOST: bool = false,
+    NAMEREQD: bool = false,
+    NUMERICSERV: bool = false,
+    DGRAM: bool = false,
+    _: i27 = 0,
+} else void;
+
 pub const has_unix_sockets = switch (builtin.os.tag) {
     .windows => builtin.os.version_range.windows.isAtLeast(.win10_rs4) orelse false,
     .wasi => false,
@@ -1224,4 +1258,252 @@ pub fn createLoopbackSocketPair() CreateLoopbackSocketPairError![2]fd_t {
     close(listen_sock);
 
     return .{ read_sock, write_sock };
+}
+
+pub const addrinfo = switch (builtin.os.tag) {
+    .windows => windows_addrinfo,
+    else => std.c.addrinfo,
+};
+
+pub const AI = switch (builtin.os.tag) {
+    .windows => std.os.windows.ws2_32.AI,
+    else => std.c.AI,
+};
+
+pub const GetAddrInfoError = error{
+    AddressFamilyNotSupported,
+    TemporaryNameServerFailure,
+    InvalidFlags,
+    NameServerFailure,
+    UnknownHostName,
+    ServiceNotAvailable,
+    SocketTypeNotSupported,
+    SystemResources,
+    Unexpected,
+};
+
+pub fn getaddrinfo(
+    node: ?[*:0]const u8,
+    service: ?[*:0]const u8,
+    hints: ?*const addrinfo,
+    res: *?*addrinfo,
+) GetAddrInfoError!void {
+    switch (builtin.os.tag) {
+        .windows => {
+            const rc = windows_extern.getaddrinfo(node, service, hints, res);
+            if (rc != 0) {
+                return errnoToGetAddrInfoError(rc);
+            }
+        },
+        else => {
+            const rc = std.c.getaddrinfo(node, service, hints, res);
+            const rc_int: c_int = @intFromEnum(rc);
+            if (rc_int != 0) {
+                return errnoToGetAddrInfoError(rc);
+            }
+        },
+    }
+}
+
+pub fn freeaddrinfo(res: *addrinfo) void {
+    switch (builtin.os.tag) {
+        .windows => {
+            windows_extern.freeaddrinfo(res);
+        },
+        else => {
+            std.c.freeaddrinfo(res);
+        },
+    }
+}
+
+fn errnoToGetAddrInfoError(err: anytype) GetAddrInfoError {
+    switch (builtin.os.tag) {
+        .windows => {
+            const wsa_err: std.os.windows.ws2_32.WinsockError = @enumFromInt(@as(u16, @intCast(err)));
+            return switch (wsa_err) {
+                .WSAEAFNOSUPPORT => error.AddressFamilyNotSupported,
+                .WSAEINVAL => error.InvalidFlags,
+                .WSAESOCKTNOSUPPORT => error.SocketTypeNotSupported,
+                .WSANO_DATA => error.UnknownHostName,
+                .WSANO_RECOVERY => error.NameServerFailure,
+                .WSANOTINITIALISED => error.SystemResources,
+                .WSATRY_AGAIN => error.TemporaryNameServerFailure,
+                .WSATYPE_NOT_FOUND => error.ServiceNotAvailable,
+                .WSA_NOT_ENOUGH_MEMORY => error.SystemResources,
+                else => unexpectedError(wsa_err),
+            };
+        },
+        else => {
+            // EAI_* error codes - err is std.c.EAI
+            return switch (err) {
+                .ADDRFAMILY => error.AddressFamilyNotSupported,
+                .AGAIN => error.TemporaryNameServerFailure,
+                .BADFLAGS => error.InvalidFlags,
+                .FAIL => error.NameServerFailure,
+                .FAMILY => error.AddressFamilyNotSupported,
+                .MEMORY => error.SystemResources,
+                .NODATA => error.UnknownHostName,
+                .NONAME => error.UnknownHostName,
+                .SERVICE => error.ServiceNotAvailable,
+                .SOCKTYPE => error.SocketTypeNotSupported,
+                .SYSTEM => {
+                    // EAI.SYSTEM means we need to check errno
+                    const errno_val: posix.system.E = @enumFromInt(std.c._errno().*);
+                    return switch (errno_val) {
+                        .SUCCESS => unreachable,
+                        .NOMEM => error.SystemResources,
+                        else => |e| unexpectedError(e),
+                    };
+                },
+                else => {
+                    log.err("getaddrinfo returned unexpected EAI error: {}", .{err});
+                    return error.Unexpected;
+                },
+            };
+        },
+    }
+}
+
+pub const NI = switch (builtin.os.tag) {
+    .windows => windows_NI,
+    else => std.c.NI,
+};
+
+pub const GetNameInfoError = error{
+    SystemResources,
+    HostNotFound,
+    ServiceNotFound,
+    NameTooLong,
+    Unexpected,
+};
+
+pub fn getnameinfo(
+    addr: *const sockaddr,
+    addr_len: socklen_t,
+    host: ?[]u8,
+    service: ?[]u8,
+    flags: NI,
+) GetNameInfoError!void {
+    switch (builtin.os.tag) {
+        .windows => {
+            const rc = std.os.windows.ws2_32.getnameinfo(
+                addr,
+                addr_len,
+                if (host) |h| h.ptr else null,
+                if (host) |h| @intCast(h.len) else 0,
+                if (service) |s| s.ptr else null,
+                if (service) |s| @intCast(s.len) else 0,
+                @bitCast(flags),
+            );
+            if (rc != 0) {
+                return errnoToGetNameInfoError(rc);
+            }
+        },
+        else => {
+            const rc = std.c.getnameinfo(
+                addr,
+                addr_len,
+                if (host) |h| h.ptr else null,
+                if (host) |h| @intCast(h.len) else 0,
+                if (service) |s| s.ptr else null,
+                if (service) |s| @intCast(s.len) else 0,
+                flags,
+            );
+            const rc_int: c_int = @intFromEnum(rc);
+            if (rc_int != 0) {
+                return errnoToGetNameInfoError(rc);
+            }
+        },
+    }
+}
+
+fn errnoToGetNameInfoError(err: anytype) GetNameInfoError {
+    switch (builtin.os.tag) {
+        .windows => {
+            const wsa_err: std.os.windows.ws2_32.WinsockError = @enumFromInt(@as(u16, @intCast(err)));
+            return switch (wsa_err) {
+                .WSAHOST_NOT_FOUND => error.HostNotFound,
+                .WSANO_DATA => error.HostNotFound,
+                .WSATYPE_NOT_FOUND => error.ServiceNotFound,
+                .WSA_NOT_ENOUGH_MEMORY => error.SystemResources,
+                else => unexpectedError(wsa_err),
+            };
+        },
+        else => {
+            // NI_* error codes - err is std.c.EAI (getnameinfo returns same codes as getaddrinfo)
+            return switch (err) {
+                .AGAIN => error.SystemResources,
+                .FAIL => error.HostNotFound,
+                .MEMORY => error.SystemResources,
+                .NONAME => error.HostNotFound,
+                .OVERFLOW => error.NameTooLong,
+                .SYSTEM => {
+                    // EAI.SYSTEM means we need to check errno
+                    const errno_val: posix.system.E = @enumFromInt(std.c._errno().*);
+                    return switch (errno_val) {
+                        .SUCCESS => unreachable,
+                        .NOMEM => error.SystemResources,
+                        else => |e| unexpectedError(e),
+                    };
+                },
+                else => {
+                    log.err("getnameinfo returned unexpected EAI error: {}", .{err});
+                    return error.Unexpected;
+                },
+            };
+        },
+    }
+}
+
+test "getaddrinfo - resolve example.com" {
+    ensureWSAInitialized();
+
+    // Set up hints for IPv4 stream socket
+    var hints: addrinfo = std.mem.zeroes(addrinfo);
+    hints.family = AF.INET;
+    hints.socktype = std.c.SOCK.STREAM;
+
+    var res: ?*addrinfo = null;
+    try getaddrinfo("example.com", "80", &hints, &res);
+    defer if (res) |r| freeaddrinfo(r);
+
+    // Verify we got results
+    try std.testing.expect(res != null);
+
+    // Verify we can iterate through results
+    var current = res;
+    var count: usize = 0;
+    while (current) |info| {
+        count += 1;
+        try std.testing.expect(info.family == AF.INET);
+        try std.testing.expect(info.socktype == std.c.SOCK.STREAM);
+        current = info.next;
+    }
+    try std.testing.expect(count > 0);
+}
+
+test "getnameinfo - reverse lookup localhost" {
+    ensureWSAInitialized();
+
+    // Create a sockaddr for 127.0.0.1
+    const addr = std.posix.sockaddr.in{
+        .family = AF.INET,
+        .port = 0,
+        .addr = 0x0100007F, // 127.0.0.1 in network byte order
+        .zero = [_]u8{0} ** 8,
+    };
+
+    var host_buf: [256]u8 = undefined;
+    try getnameinfo(
+        @ptrCast(&addr),
+        @sizeOf(@TypeOf(addr)),
+        &host_buf,
+        null,
+        .{ .NUMERICHOST = true },
+    );
+
+    // Should get "127.0.0.1" back
+    const host_len = std.mem.indexOfScalar(u8, &host_buf, 0) orelse host_buf.len;
+    const host = host_buf[0..host_len];
+    try std.testing.expectEqualStrings("127.0.0.1", host);
 }

@@ -494,6 +494,7 @@ fn submitAccept(self: *Self, state: *LoopState, data: *NetAccept) !void {
     var bytes_received: windows.DWORD = 0;
     const addr_size: windows.DWORD = NetAcceptData.addr_slot_size;
 
+    log.debug("AcceptEx: family={}, addr_size={}", .{ family, addr_size });
     const result = exts.acceptex(
         data.handle, // listening socket
         accept_socket, // accept socket
@@ -512,6 +513,7 @@ fn submitAccept(self: *Self, state: *LoopState, data: *NetAccept) !void {
     // the completion will be posted to the IOCP port.
     if (result == windows.FALSE) {
         const err = windows.ws2_32.WSAGetLastError();
+        log.debug("AcceptEx returned FALSE, error: {}", .{err});
         if (err != .WSA_IO_PENDING) {
             // Real error - complete immediately with error
             net.close(accept_socket);
@@ -520,6 +522,8 @@ fn submitAccept(self: *Self, state: *LoopState, data: *NetAccept) !void {
             state.markCompleted(&data.c);
             return;
         }
+    } else {
+        log.debug("AcceptEx returned TRUE (immediate completion)", .{});
     }
     // Operation will complete via IOCP (either immediate or async)
 }

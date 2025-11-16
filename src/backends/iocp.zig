@@ -1022,6 +1022,7 @@ fn processCompletion(self: *Self, state: *LoopState, entry: *const windows.OVERL
                     if (data.addr) |user_addr| {
                         // Load GetAcceptExSockaddrs extension function using the stored family
                         const exts = self.shared_state.getExtensions(self.allocator, data.internal.family) catch |err| {
+                            net.close(data.result_private_do_not_touch);
                             c.setError(err);
                             state.markCompleted(c);
                             return;

@@ -25,11 +25,11 @@ const windows_extern = if (builtin.os.tag == .windows) struct {
         pServiceName: ?[*:0]const u8,
         pHints: ?*const windows_addrinfo,
         ppResult: *?*windows_addrinfo,
-    ) callconv(std.os.windows.WINAPI) i32;
+    ) callconv(.winapi) i32;
 
     pub extern "ws2_32" fn freeaddrinfo(
         pAddrInfo: *windows_addrinfo,
-    ) callconv(std.os.windows.WINAPI) void;
+    ) callconv(.winapi) void;
 } else struct {};
 
 pub const has_unix_sockets = switch (builtin.os.tag) {

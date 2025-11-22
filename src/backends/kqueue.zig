@@ -487,7 +487,7 @@ pub fn checkCompletion(comp: *Completion, event: *const std.c.Kevent) CheckResul
         .net_poll => {
             // For poll operations, EOF means the socket is "ready" (will return EOF on next read)
             // Only treat actual errors (EV_ERROR) as errors
-            const has_error = (event.flags & std.c.EV_ERROR) != 0;
+            const has_error = (event.flags & EV_ERROR) != 0;
             if (has_error) {
                 const err = net.errnoToRecvError(@enumFromInt(event.data));
                 comp.setError(err);

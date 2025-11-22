@@ -106,10 +106,10 @@ fn getEvents(completion: *Completion) @FieldType(net.pollfd, "events") {
         .net_sendto => net.POLL.OUT,
         .net_poll => blk: {
             const poll_data = completion.cast(NetPoll);
-            var events: @FieldType(net.pollfd, "events") = 0;
-            if (poll_data.events.recv) events |= net.POLL.IN;
-            if (poll_data.events.send) events |= net.POLL.OUT;
-            break :blk events;
+            break :blk switch (poll_data.event) {
+                .recv => net.POLL.IN,
+                .send => net.POLL.OUT,
+            };
         },
         else => unreachable,
     };
@@ -500,9 +500,15 @@ pub fn checkCompletion(c: *Completion, item: *const net.pollfd) CheckResult {
                 c.setError(err);
                 return .completed;
             }
-            // Socket is ready - just report success (no syscall needed)
-            c.setResult(.net_poll, {});
-            return .completed;
+            // Check if the requested events are actually ready
+            const requested_events = getEvents(c);
+            const ready_events = item.revents & requested_events;
+            if (ready_events != 0) {
+                c.setResult(.net_poll, {});
+                return .completed;
+            }
+            // Requested events not ready yet - requeue
+            return .requeue;
         },
         else => {
             std.debug.panic("unexpected completion type in complete: {}", .{c.op});

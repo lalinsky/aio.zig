@@ -573,10 +573,9 @@ fn submitPoll(self: *Self, state: *LoopState, data: *NetPoll) !void {
     var bytes_transferred: windows.DWORD = 0;
     var flags: windows.DWORD = 0;
 
-    // Choose WSARecv or WSASend based on what events are requested
-    // If both recv and send are requested, prefer recv (more common use case)
-    const result = if (data.events.recv)
-        windows.ws2_32.WSARecv(
+    // Choose WSARecv or WSASend based on which event is requested
+    const result = switch (data.event) {
+        .recv => windows.ws2_32.WSARecv(
             data.handle,
             @ptrCast(&zero_buf),
             1,
@@ -584,9 +583,8 @@ fn submitPoll(self: *Self, state: *LoopState, data: *NetPoll) !void {
             &flags,
             &data.c.internal.overlapped,
             null,
-        )
-    else if (data.events.send)
-        windows.ws2_32.WSASend(
+        ),
+        .send => windows.ws2_32.WSASend(
             data.handle,
             @ptrCast(&zero_buf),
             1,
@@ -594,18 +592,8 @@ fn submitPoll(self: *Self, state: *LoopState, data: *NetPoll) !void {
             flags,
             &data.c.internal.overlapped,
             null,
-        )
-    else
-        // If neither flag is set, default to recv
-        windows.ws2_32.WSARecv(
-            data.handle,
-            @ptrCast(&zero_buf),
-            1,
-            &bytes_transferred,
-            &flags,
-            &data.c.internal.overlapped,
-            null,
-        );
+        ),
+    };
 
     if (result == windows.ws2_32.SOCKET_ERROR) {
         const err = windows.ws2_32.WSAGetLastError();

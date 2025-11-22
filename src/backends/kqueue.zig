@@ -129,11 +129,10 @@ fn getFilter(completion: *Completion) i16 {
         .net_sendto => std.c.EVFILT.WRITE,
         .net_poll => blk: {
             const poll_data = completion.cast(NetPoll);
-            // For kqueue, we can only register one filter at a time
-            // If both recv and send are requested, prefer READ
-            if (poll_data.events.recv) break :blk std.c.EVFILT.READ;
-            if (poll_data.events.send) break :blk std.c.EVFILT.WRITE;
-            break :blk std.c.EVFILT.READ; // Default to read if neither specified
+            break :blk switch (poll_data.event) {
+                .recv => std.c.EVFILT.READ,
+                .send => std.c.EVFILT.WRITE,
+            };
         },
         else => unreachable,
     };
@@ -491,9 +490,14 @@ pub fn checkCompletion(comp: *Completion, event: *const std.c.Kevent) CheckResul
                 comp.setError(err);
                 return .completed;
             }
-            // Socket is ready - just report success (no syscall needed)
-            comp.setResult(.net_poll, {});
-            return .completed;
+            // Check if the event filter matches what we registered for
+            const requested_filter = getFilter(comp);
+            if (event.filter == requested_filter) {
+                comp.setResult(.net_poll, {});
+                return .completed;
+            }
+            // Wrong filter - requeue (shouldn't normally happen with ONESHOT)
+            return .requeue;
         },
         else => {
             std.debug.panic("unexpected completion type in complete: {}", .{comp.op});

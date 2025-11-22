@@ -811,25 +811,21 @@ pub const NetPoll = struct {
     c: Completion,
     result_private_do_not_touch: void = {},
     handle: Backend.NetHandle,
-    events: Events,
+    event: Event,
 
     pub const Error = net.RecvError || Cancelable;
 
-    /// Events to monitor for
-    pub const Events = packed struct {
-        recv: bool = false,
-        send: bool = false,
-
-        pub fn empty() Events {
-            return .{};
-        }
+    /// Event to monitor for
+    pub const Event = enum {
+        recv,
+        send,
     };
 
-    pub fn init(handle: Backend.NetHandle, events: Events) NetPoll {
+    pub fn init(handle: Backend.NetHandle, event: Event) NetPoll {
         return .{
             .c = .init(.net_poll),
             .handle = handle,
-            .events = events,
+            .event = event,
         };
     }
 

@@ -272,9 +272,10 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
                 state.markCompleted(c);
                 return;
             };
-            var poll_mask: u32 = 0;
-            if (data.events.recv) poll_mask |= linux.POLL.IN;
-            if (data.events.send) poll_mask |= linux.POLL.OUT;
+            const poll_mask: u32 = switch (data.event) {
+                .recv => linux.POLL.IN,
+                .send => linux.POLL.OUT,
+            };
             sqe.prep_poll_add(data.handle, poll_mask);
             sqe.user_data = @intFromPtr(c);
         },
@@ -638,7 +639,7 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
             if (res < 0) {
                 c.setError(net.errnoToRecvError(@enumFromInt(-res)));
             } else {
-                // Poll succeeded - socket is ready
+                // Poll succeeded - requested events are ready
                 c.setResult(.net_poll, {});
             }
         },

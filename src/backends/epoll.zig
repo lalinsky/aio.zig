@@ -121,11 +121,10 @@ fn getEvents(completion: *Completion) u32 {
         .net_sendto => std.os.linux.EPOLL.OUT,
         .net_poll => blk: {
             const poll_data = completion.cast(NetPoll);
-            var events: u32 = 0;
-            if (poll_data.events.recv) events |= std.os.linux.EPOLL.IN;
-            if (poll_data.events.send) events |= std.os.linux.EPOLL.OUT;
-            // EPOLLERR and EPOLLHUP are always monitored automatically
-            break :blk events;
+            break :blk switch (poll_data.event) {
+                .recv => std.os.linux.EPOLL.IN,
+                .send => std.os.linux.EPOLL.OUT,
+            };
         },
         else => unreachable,
     };
@@ -531,9 +530,15 @@ pub fn checkCompletion(c: *Completion, event: *const std.os.linux.epoll_event) C
                 c.setError(err);
                 return .completed;
             }
-            // Socket is ready - just report success (no syscall needed)
-            c.setResult(.net_poll, {});
-            return .completed;
+            // Check if the requested events are actually ready
+            const requested_events = getEvents(c);
+            const ready_events = event.events & requested_events;
+            if (ready_events != 0) {
+                c.setResult(.net_poll, {});
+                return .completed;
+            }
+            // Requested events not ready yet - requeue
+            return .requeue;
         },
         else => {
             std.debug.panic("unexpected completion type in complete: {}", .{c.op});

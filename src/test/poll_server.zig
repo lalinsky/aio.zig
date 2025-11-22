@@ -166,7 +166,7 @@ pub fn EchoServer(comptime domain: net.Domain, comptime sockaddr: type) type {
             };
 
             self.state = .polling_recv;
-            self.comp = .{ .poll_recv = aio.NetPoll.init(self.client_sock.?, .{ .recv = true }) };
+            self.comp = .{ .poll_recv = aio.NetPoll.init(self.client_sock.?, .recv) };
             self.comp.poll_recv.c.callback = pollRecvCallback;
             self.comp.poll_recv.c.userdata = self;
             loop.add(&self.comp.poll_recv.c);
@@ -209,7 +209,7 @@ pub fn EchoServer(comptime domain: net.Domain, comptime sockaddr: type) type {
 
             self.state = .polling_send;
             self.bytes_sent = 0;
-            self.comp = .{ .poll_send = aio.NetPoll.init(self.client_sock.?, .{ .send = true }) };
+            self.comp = .{ .poll_send = aio.NetPoll.init(self.client_sock.?, .send) };
             self.comp.poll_send.c.callback = pollSendCallback;
             self.comp.poll_send.c.userdata = self;
             loop.add(&self.comp.poll_send.c);
@@ -256,7 +256,7 @@ pub fn EchoServer(comptime domain: net.Domain, comptime sockaddr: type) type {
 
             // Full message sent - go back to polling for more data
             self.state = .polling_recv;
-            self.comp = .{ .poll_recv = aio.NetPoll.init(self.client_sock.?, .{ .recv = true }) };
+            self.comp = .{ .poll_recv = aio.NetPoll.init(self.client_sock.?, .recv) };
             self.comp.poll_recv.c.callback = pollRecvCallback;
             self.comp.poll_recv.c.userdata = self;
             loop.add(&self.comp.poll_recv.c);
@@ -387,7 +387,7 @@ pub fn EchoClient(comptime domain: net.Domain, comptime sockaddr: type) type {
 
             self.state = .polling_send;
             self.bytes_sent = 0;
-            self.comp = .{ .poll_send = aio.NetPoll.init(self.client_sock, .{ .send = true }) };
+            self.comp = .{ .poll_send = aio.NetPoll.init(self.client_sock, .send) };
             self.comp.poll_send.c.callback = pollSendCallback;
             self.comp.poll_send.c.userdata = self;
             loop.add(&self.comp.poll_send.c);
@@ -450,7 +450,7 @@ pub fn EchoClient(comptime domain: net.Domain, comptime sockaddr: type) type {
 
             self.state = .polling_recv;
             self.bytes_received = 0;
-            self.comp = .{ .poll_recv = aio.NetPoll.init(self.client_sock, .{ .recv = true }) };
+            self.comp = .{ .poll_recv = aio.NetPoll.init(self.client_sock, .recv) };
             self.comp.poll_recv.c.callback = pollRecvCallback;
             self.comp.poll_recv.c.userdata = self;
             loop.add(&self.comp.poll_recv.c);

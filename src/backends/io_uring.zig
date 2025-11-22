@@ -25,6 +25,7 @@ const NetRecv = @import("../completion.zig").NetRecv;
 const NetSend = @import("../completion.zig").NetSend;
 const NetRecvFrom = @import("../completion.zig").NetRecvFrom;
 const NetSendTo = @import("../completion.zig").NetSendTo;
+const NetPoll = @import("../completion.zig").NetPoll;
 const NetClose = @import("../completion.zig").NetClose;
 const NetShutdown = @import("../completion.zig").NetShutdown;
 const FileOpen = @import("../completion.zig").FileOpen;
@@ -261,6 +262,20 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
                 return;
             };
             sqe.prep_sendmsg(data.handle, &data.internal.msg, sendFlagsToMsg(data.flags));
+            sqe.user_data = @intFromPtr(c);
+        },
+        .net_poll => {
+            const data = c.cast(NetPoll);
+            const sqe = self.getSqe(state) catch {
+                log.err("Failed to get io_uring SQE for poll_add", .{});
+                c.setError(error.Unexpected);
+                state.markCompleted(c);
+                return;
+            };
+            var poll_mask: u32 = 0;
+            if (data.events.recv) poll_mask |= linux.POLL.IN;
+            if (data.events.send) poll_mask |= linux.POLL.OUT;
+            sqe.prep_poll_add(data.handle, poll_mask);
             sqe.user_data = @intFromPtr(c);
         },
         .net_shutdown => {
@@ -617,6 +632,14 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
                 c.setError(net.errnoToSendError(@enumFromInt(-res)));
             } else {
                 c.setResult(.net_sendto, @as(usize, @intCast(res)));
+            }
+        },
+        .net_poll => {
+            if (res < 0) {
+                c.setError(net.errnoToRecvError(@enumFromInt(-res)));
+            } else {
+                // Poll succeeded - socket is ready
+                c.setResult(.net_poll, {});
             }
         },
         .net_shutdown => {

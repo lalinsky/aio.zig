@@ -485,19 +485,18 @@ pub fn checkCompletion(comp: *Completion, event: *const std.c.Kevent) CheckResul
             }
         },
         .net_poll => {
-            // Handle errors the same way as recv/send
-            if (handleKqueueError(event, net.errnoToRecvError)) |err| {
+            // For poll operations, EOF means the socket is "ready" (will return EOF on next read)
+            // Only treat actual errors (EV_ERROR) as errors
+            const has_error = (event.flags & std.c.EV_ERROR) != 0;
+            if (has_error) {
+                const err = net.errnoToRecvError(@enumFromInt(event.data));
                 comp.setError(err);
                 return .completed;
             }
-            // Check if the event filter matches what we registered for
-            const requested_filter = getFilter(comp);
-            if (event.filter == requested_filter) {
-                comp.setResult(.net_poll, {});
-                return .completed;
-            }
-            // Wrong filter - requeue (shouldn't normally happen with ONESHOT)
-            return .requeue;
+
+            // EOF or normal readiness - both mean socket is ready
+            comp.setResult(.net_poll, {});
+            return .completed;
         },
         else => {
             std.debug.panic("unexpected completion type in complete: {}", .{comp.op});

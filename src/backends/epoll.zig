@@ -525,11 +525,18 @@ pub fn checkCompletion(c: *Completion, event: *const std.os.linux.epoll_event) C
             }
         },
         .net_poll => {
-            // Handle errors the same way as recv/send
-            if (handleEpollError(event, net.errnoToRecvError)) |err| {
-                c.setError(err);
+            // For poll operations, we want to know when the socket is "ready"
+            // This includes error conditions (EPOLLERR, EPOLLHUP) because they
+            // indicate the socket is ready to return an error on the next I/O
+            const has_error = (event.events & std.os.linux.EPOLL.ERR) != 0;
+            const has_hup = (event.events & std.os.linux.EPOLL.HUP) != 0;
+
+            if (has_error or has_hup) {
+                // Socket has error or hangup - it's "ready"
+                c.setResult(.net_poll, {});
                 return .completed;
             }
+
             // Check if the requested events are actually ready
             const requested_events = getEvents(c);
             const ready_events = event.events & requested_events;

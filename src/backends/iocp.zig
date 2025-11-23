@@ -568,7 +568,9 @@ fn submitPoll(self: *Self, state: *LoopState, data: *NetPoll) !void {
 
     // Use zero-length WSARecv/WSASend to detect readiness
     // Zero-length operations complete immediately if socket is ready
-    var zero_buf = windows.ws2_32.WSABUF{ .len = 0, .buf = undefined };
+    // Use pointer to a local variable instead of undefined to avoid passing undefined value to kernel
+    var dummy: u8 = 0;
+    var zero_buf = windows.ws2_32.WSABUF{ .len = 0, .buf = @ptrCast(&dummy) };
 
     var bytes_transferred: windows.DWORD = 0;
     var flags: windows.DWORD = 0;

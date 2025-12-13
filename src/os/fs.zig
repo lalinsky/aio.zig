@@ -787,7 +787,7 @@ pub fn fstat(fd: fd_t) FileStatError!FileStatInfo {
         }
 
         const size: u64 = (@as(u64, info.nFileSizeHigh) << 32) | info.nFileSizeLow;
-        const inode: ino_t = (@as(u64, info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+        const inode: ino_t = @bitCast((@as(u64, info.nFileIndexHigh) << 32) | info.nFileIndexLow);
 
         const kind: FileKind = if (info.dwFileAttributes & w.FILE_ATTRIBUTE_DIRECTORY != 0)
             .directory

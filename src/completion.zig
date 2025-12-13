@@ -18,6 +18,8 @@ pub const BackendCapabilities = struct {
     file_rename: bool = false,
     file_delete: bool = false,
     file_size: bool = false,
+    file_stat: bool = false,
+    file_stat_path: bool = false,
 
     pub fn supportsNonBlockingFileIo(comptime self: BackendCapabilities) bool {
         return self.file_read or self.file_write;
@@ -50,6 +52,8 @@ pub const Op = enum {
     file_rename,
     file_delete,
     file_size,
+    file_stat,
+    file_stat_path,
 
     /// Get the completion type for this operation
     pub fn toType(comptime op: Op) type {
@@ -79,6 +83,8 @@ pub const Op = enum {
             .file_rename => FileRename,
             .file_delete => FileDelete,
             .file_size => FileSize,
+            .file_stat => FileStat,
+            .file_stat_path => FileStatPath,
         };
     }
 
@@ -110,6 +116,8 @@ pub const Op = enum {
             FileRename => .file_rename,
             FileDelete => .file_delete,
             FileSize => .file_size,
+            FileStat => .file_stat,
+            FileStatPath => .file_stat_path,
             else => @compileError("unknown completion type"),
         };
     }
@@ -834,6 +842,54 @@ pub const FileSize = struct {
 
     pub fn getResult(self: *const FileSize) Error!u64 {
         return self.c.getResult(.file_size);
+    }
+};
+
+pub const FileStat = struct {
+    c: Completion,
+    result_private_do_not_touch: fs.FileStatInfo = undefined,
+    internal: switch (Backend.capabilities.file_stat) {
+        true => if (@hasDecl(Backend, "FileStatData")) Backend.FileStatData else struct {},
+        false => struct { work: Work = undefined, linked_context: Loop.LinkedWorkContext = undefined },
+    } = .{},
+    handle: fs.fd_t,
+
+    pub const Error = fs.FileStatError || Cancelable;
+
+    pub fn init(handle: fs.fd_t) FileStat {
+        return .{
+            .c = .init(.file_stat),
+            .handle = handle,
+        };
+    }
+
+    pub fn getResult(self: *const FileStat) Error!fs.FileStatInfo {
+        return self.c.getResult(.file_stat);
+    }
+};
+
+pub const FileStatPath = struct {
+    c: Completion,
+    result_private_do_not_touch: fs.FileStatInfo = undefined,
+    internal: switch (Backend.capabilities.file_stat_path) {
+        true => if (@hasDecl(Backend, "FileStatPathData")) Backend.FileStatPathData else struct {},
+        false => struct { work: Work = undefined, allocator: std.mem.Allocator = undefined, linked_context: Loop.LinkedWorkContext = undefined },
+    } = .{},
+    dir: fs.fd_t,
+    path: []const u8,
+
+    pub const Error = fs.FileStatError || Cancelable;
+
+    pub fn init(dir: fs.fd_t, path: []const u8) FileStatPath {
+        return .{
+            .c = .init(.file_stat_path),
+            .dir = dir,
+            .path = path,
+        };
+    }
+
+    pub fn getResult(self: *const FileStatPath) Error!fs.FileStatInfo {
+        return self.c.getResult(.file_stat_path);
     }
 };
 

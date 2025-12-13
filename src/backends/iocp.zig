@@ -448,6 +448,8 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
         .file_rename,
         .file_delete,
         .file_size,
+        .file_stat,
+        .file_stat_path,
         => unreachable, // These are handled by thread pool (capabilities = false)
 
         .file_read => {

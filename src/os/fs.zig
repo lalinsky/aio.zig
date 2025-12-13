@@ -749,6 +749,19 @@ pub fn fsize(fd: fd_t) FileSizeError!u64 {
         return @intCast(file_size);
     }
 
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var statx_buf: linux.Statx = undefined;
+        while (true) {
+            const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, linux.STATX_SIZE, &statx_buf);
+            switch (posix.errno(rc)) {
+                .SUCCESS => return statx_buf.size,
+                .INTR => continue,
+                else => |err| return errnoToFileSizeError(err),
+            }
+        }
+    }
+
     while (true) {
         var stat_buf: posix.system.Stat = undefined;
         const rc = posix.system.fstat(fd, &stat_buf);

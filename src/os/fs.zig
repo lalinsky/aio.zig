@@ -889,9 +889,9 @@ fn statToFileStat(stat_buf: posix.system.Stat) FileStatInfo {
         .size = @intCast(stat_buf.size),
         .mode = stat_buf.mode,
         .kind = kind,
-        .atime = timespecToNanos(stat_buf.atim),
-        .mtime = timespecToNanos(stat_buf.mtim),
-        .ctime = timespecToNanos(stat_buf.ctim),
+        .atime = timespecToNanos(stat_buf.atime()),
+        .mtime = timespecToNanos(stat_buf.mtime()),
+        .ctime = timespecToNanos(stat_buf.ctime()),
     };
 }
 

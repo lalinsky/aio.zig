@@ -804,8 +804,8 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
 
         .file_stat => {
             const data = c.cast(FileStat);
-            // Free path if it was allocated (path-based stat)
-            if (data.internal.path.len > 0) {
+            // Free path if it was allocated (only when user provided a path)
+            if (data.path != null) {
                 self.allocator.free(data.internal.path);
             }
             if (res < 0) {

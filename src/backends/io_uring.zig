@@ -34,7 +34,6 @@ const FileRename = @import("../completion.zig").FileRename;
 const FileDelete = @import("../completion.zig").FileDelete;
 const FileSize = @import("../completion.zig").FileSize;
 const FileStat = @import("../completion.zig").FileStat;
-const FileStatPath = @import("../completion.zig").FileStatPath;
 const FileClose = @import("../completion.zig").FileClose;
 const FileRead = @import("../completion.zig").FileRead;
 const FileWrite = @import("../completion.zig").FileWrite;
@@ -55,7 +54,6 @@ pub const capabilities: BackendCapabilities = .{
     .file_delete = true,
     .file_size = true,
     .file_stat = true,
-    .file_stat_path = true,
 };
 
 pub const SharedState = struct {};
@@ -98,10 +96,6 @@ pub const FileSizeData = struct {
 };
 
 pub const FileStatData = struct {
-    statx: linux.Statx = std.mem.zeroes(linux.Statx),
-};
-
-pub const FileStatPathData = struct {
     statx: linux.Statx = std.mem.zeroes(linux.Statx),
     path: [:0]const u8 = "",
 };
@@ -479,41 +473,38 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
 
         .file_stat => {
             const data = c.cast(FileStat);
-            const sqe = self.getSqe(state) catch {
-                log.err("Failed to get io_uring SQE for file_stat", .{});
-                c.setError(error.Unexpected);
-                state.markCompleted(c);
-                return;
-            };
-            // Use statx with empty pathname to get stats for the fd itself
             const mask = linux.STATX_TYPE | linux.STATX_MODE | linux.STATX_INO |
                 linux.STATX_SIZE | linux.STATX_ATIME | linux.STATX_MTIME |
                 linux.STATX_CTIME;
-            const flags = linux.AT.EMPTY_PATH;
-            sqe.prep_statx(data.handle, "", flags, mask, &data.internal.statx);
-            sqe.user_data = @intFromPtr(c);
-        },
 
-        .file_stat_path => {
-            const data = c.cast(FileStatPath);
-            const path = self.allocator.dupeZ(u8, data.path) catch {
-                c.setError(error.SystemResources);
-                state.markCompleted(c);
-                return;
-            };
-            const sqe = self.getSqe(state) catch {
-                self.allocator.free(path);
-                log.err("Failed to get io_uring SQE for file_stat_path", .{});
-                c.setError(error.Unexpected);
-                state.markCompleted(c);
-                return;
-            };
-            const mask = linux.STATX_TYPE | linux.STATX_MODE | linux.STATX_INO |
-                linux.STATX_SIZE | linux.STATX_ATIME | linux.STATX_MTIME |
-                linux.STATX_CTIME;
-            sqe.prep_statx(@intCast(data.dir), path.ptr, 0, mask, &data.internal.statx);
-            sqe.user_data = @intFromPtr(c);
-            data.internal.path = path;
+            if (data.path) |user_path| {
+                // Path provided - stat relative to handle
+                const path = self.allocator.dupeZ(u8, user_path) catch {
+                    c.setError(error.SystemResources);
+                    state.markCompleted(c);
+                    return;
+                };
+                const sqe = self.getSqe(state) catch {
+                    self.allocator.free(path);
+                    log.err("Failed to get io_uring SQE for file_stat", .{});
+                    c.setError(error.Unexpected);
+                    state.markCompleted(c);
+                    return;
+                };
+                sqe.prep_statx(@intCast(data.handle), path.ptr, 0, mask, &data.internal.statx);
+                sqe.user_data = @intFromPtr(c);
+                data.internal.path = path;
+            } else {
+                // No path - use AT_EMPTY_PATH to stat the fd itself
+                const sqe = self.getSqe(state) catch {
+                    log.err("Failed to get io_uring SQE for file_stat", .{});
+                    c.setError(error.Unexpected);
+                    state.markCompleted(c);
+                    return;
+                };
+                sqe.prep_statx(data.handle, "", linux.AT.EMPTY_PATH, mask, &data.internal.statx);
+                sqe.user_data = @intFromPtr(c);
+            }
         },
     }
 }
@@ -813,20 +804,14 @@ fn storeResult(self: *Self, c: *Completion, res: i32) void {
 
         .file_stat => {
             const data = c.cast(FileStat);
+            // Free path if it was allocated (path-based stat)
+            if (data.internal.path.len > 0) {
+                self.allocator.free(data.internal.path);
+            }
             if (res < 0) {
                 c.setError(fs.errnoToFileStatError(@enumFromInt(-res)));
             } else {
                 c.setResult(.file_stat, statxToFileStat(data.internal.statx));
-            }
-        },
-
-        .file_stat_path => {
-            const data = c.cast(FileStatPath);
-            self.allocator.free(data.internal.path);
-            if (res < 0) {
-                c.setError(fs.errnoToFileStatError(@enumFromInt(-res)));
-            } else {
-                c.setResult(.file_stat_path, statxToFileStat(data.internal.statx));
             }
         },
     }

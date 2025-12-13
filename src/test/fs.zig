@@ -302,8 +302,8 @@ test "File: stat" {
     try loop.run(.until_done);
     const fd = try file_create.getResult();
 
-    // Stat empty file
-    var file_stat1 = aio.FileStat.init(fd);
+    // Stat empty file (by fd - path is null)
+    var file_stat1 = aio.FileStat.init(fd, null);
     loop.add(&file_stat1.c);
     try loop.run(.until_done);
     try std.testing.expectEqual(.dead, file_stat1.c.state);
@@ -321,8 +321,8 @@ test "File: stat" {
     try loop.run(.until_done);
     try std.testing.expectEqual(write_data.len, try file_write.getResult());
 
-    // Stat after write
-    var file_stat2 = aio.FileStat.init(fd);
+    // Stat after write (by fd - path is null)
+    var file_stat2 = aio.FileStat.init(fd, null);
     loop.add(&file_stat2.c);
     try loop.run(.until_done);
     const stat2 = try file_stat2.getResult();
@@ -374,13 +374,13 @@ test "File: stat_path" {
     try loop.run(.until_done);
     try file_close.getResult();
 
-    // Stat by path
-    var file_stat_path = aio.FileStatPath.init(cwd.fd, "test-stat-path");
-    loop.add(&file_stat_path.c);
+    // Stat by path (using FileStat with non-null path)
+    var file_stat = aio.FileStat.init(cwd.fd, "test-stat-path");
+    loop.add(&file_stat.c);
     try loop.run(.until_done);
-    try std.testing.expectEqual(.dead, file_stat_path.c.state);
-    try std.testing.expectEqual(true, file_stat_path.c.has_result);
-    const stat = try file_stat_path.getResult();
+    try std.testing.expectEqual(.dead, file_stat.c.state);
+    try std.testing.expectEqual(true, file_stat.c.has_result);
+    const stat = try file_stat.getResult();
     try std.testing.expectEqual(write_data.len, stat.size);
     try std.testing.expectEqual(.file, stat.kind);
     try std.testing.expect(stat.inode != 0);

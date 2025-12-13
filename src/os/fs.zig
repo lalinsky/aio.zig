@@ -807,6 +807,22 @@ pub fn fstat(fd: fd_t) FileStatError!FileStatInfo {
         };
     }
 
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        const mask = linux.STATX_TYPE | linux.STATX_MODE | linux.STATX_INO |
+            linux.STATX_SIZE | linux.STATX_ATIME | linux.STATX_MTIME |
+            linux.STATX_CTIME;
+        var statx_buf: linux.Statx = undefined;
+        while (true) {
+            const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, mask, &statx_buf);
+            switch (posix.errno(rc)) {
+                .SUCCESS => return statxToFileStat(statx_buf),
+                .INTR => continue,
+                else => |err| return errnoToFileStatError(err),
+            }
+        }
+    }
+
     while (true) {
         var stat_buf: posix.system.Stat = undefined;
         const rc = posix.system.fstat(fd, &stat_buf);
@@ -860,6 +876,22 @@ pub fn fstatat(allocator: std.mem.Allocator, dir: fd_t, path: []const u8) FileSt
     const path_z = allocator.dupeZ(u8, path) catch return error.SystemResources;
     defer allocator.free(path_z);
 
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        const mask = linux.STATX_TYPE | linux.STATX_MODE | linux.STATX_INO |
+            linux.STATX_SIZE | linux.STATX_ATIME | linux.STATX_MTIME |
+            linux.STATX_CTIME;
+        var statx_buf: linux.Statx = undefined;
+        while (true) {
+            const rc = linux.statx(dir, path_z.ptr, 0, mask, &statx_buf);
+            switch (posix.errno(rc)) {
+                .SUCCESS => return statxToFileStat(statx_buf),
+                .INTR => continue,
+                else => |err| return errnoToFileStatError(err),
+            }
+        }
+    }
+
     while (true) {
         var stat_buf: posix.system.Stat = undefined;
         const rc = posix.system.fstatat(dir, path_z.ptr, &stat_buf, 0);
@@ -896,6 +928,34 @@ fn statToFileStat(stat_buf: posix.system.Stat) FileStatInfo {
 }
 
 fn timespecToNanos(ts: posix.system.timespec) i64 {
+    return @as(i64, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+fn statxToFileStat(statx_buf: std.os.linux.Statx) FileStatInfo {
+    const S = std.os.linux.S;
+    const kind: FileKind = switch (statx_buf.mode & S.IFMT) {
+        S.IFBLK => .block_device,
+        S.IFCHR => .character_device,
+        S.IFDIR => .directory,
+        S.IFIFO => .named_pipe,
+        S.IFLNK => .sym_link,
+        S.IFREG => .file,
+        S.IFSOCK => .unix_domain_socket,
+        else => .unknown,
+    };
+
+    return .{
+        .inode = statx_buf.ino,
+        .size = statx_buf.size,
+        .mode = statx_buf.mode,
+        .kind = kind,
+        .atime = statxTimeToNanos(statx_buf.atime),
+        .mtime = statxTimeToNanos(statx_buf.mtime),
+        .ctime = statxTimeToNanos(statx_buf.ctime),
+    };
+}
+
+fn statxTimeToNanos(ts: std.os.linux.statx_timestamp) i64 {
     return @as(i64, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 

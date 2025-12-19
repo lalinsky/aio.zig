@@ -22,12 +22,20 @@ const NetSendTo = @import("../completion.zig").NetSendTo;
 const NetPoll = @import("../completion.zig").NetPoll;
 const NetClose = @import("../completion.zig").NetClose;
 const NetShutdown = @import("../completion.zig").NetShutdown;
+const FileStreamPoll = @import("../completion.zig").FileStreamPoll;
+const FileStreamRead = @import("../completion.zig").FileStreamRead;
+const FileStreamWrite = @import("../completion.zig").FileStreamWrite;
 
 pub const NetHandle = net.fd_t;
 
 const BackendCapabilities = @import("../completion.zig").BackendCapabilities;
+const fs = @import("../os/fs.zig");
 
-pub const capabilities: BackendCapabilities = .{};
+pub const capabilities: BackendCapabilities = .{
+    .file_stream_poll = true,
+    .file_stream_read = true,
+    .file_stream_write = true,
+};
 
 pub const SharedState = struct {};
 
@@ -111,6 +119,15 @@ fn getEvents(completion: *Completion) @FieldType(net.pollfd, "events") {
                 .send => net.POLL.OUT,
             };
         },
+        .file_stream_read => net.POLL.IN,
+        .file_stream_write => net.POLL.OUT,
+        .file_stream_poll => blk: {
+            const poll_data = completion.cast(FileStreamPoll);
+            break :blk switch (poll_data.event) {
+                .read => net.POLL.IN,
+                .write => net.POLL.OUT,
+            };
+        },
         else => unreachable,
     };
 }
@@ -124,6 +141,9 @@ fn getPollType(op: Op) PollEntryType {
         .net_recvfrom => .send_or_recv,
         .net_sendto => .send_or_recv,
         .net_poll => .send_or_recv,
+        .file_stream_read => .send_or_recv,
+        .file_stream_write => .send_or_recv,
+        .file_stream_poll => .send_or_recv,
         else => unreachable,
     };
 }
@@ -218,6 +238,9 @@ fn getHandle(completion: *Completion) NetHandle {
         .net_recvfrom => completion.cast(NetRecvFrom).handle,
         .net_sendto => completion.cast(NetSendTo).handle,
         .net_poll => completion.cast(NetPoll).handle,
+        .file_stream_read => completion.cast(FileStreamRead).handle,
+        .file_stream_write => completion.cast(FileStreamWrite).handle,
+        .file_stream_poll => completion.cast(FileStreamPoll).handle,
         else => unreachable,
     };
 }
@@ -296,6 +319,20 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
         },
         .net_poll => {
             const data = c.cast(NetPoll);
+            self.addToPollQueue(state, data.handle, c);
+        },
+
+        // File stream operations
+        .file_stream_read => {
+            const data = c.cast(FileStreamRead);
+            self.addToPollQueue(state, data.handle, c);
+        },
+        .file_stream_write => {
+            const data = c.cast(FileStreamWrite);
+            self.addToPollQueue(state, data.handle, c);
+        },
+        .file_stream_poll => {
+            const data = c.cast(FileStreamPoll);
             self.addToPollQueue(state, data.handle, c);
         },
 
@@ -513,6 +550,61 @@ pub fn checkCompletion(c: *Completion, item: *const net.pollfd) CheckResult {
             const ready_events = item.revents & requested_events;
             if (ready_events != 0) {
                 c.setResult(.net_poll, {});
+                return .completed;
+            }
+            // Requested events not ready yet - requeue
+            return .requeue;
+        },
+        .file_stream_read => {
+            const data = c.cast(FileStreamRead);
+            if (handlePollError(item, fs.errnoToFileReadError)) |err| {
+                c.setError(err);
+                return .completed;
+            }
+            if (fs.readv(data.handle, data.buffer.iovecs)) |n| {
+                c.setResult(.file_stream_read, n);
+                return .completed;
+            } else |err| switch (err) {
+                error.WouldBlock => return .requeue,
+                else => {
+                    c.setError(err);
+                    return .completed;
+                },
+            }
+        },
+        .file_stream_write => {
+            const data = c.cast(FileStreamWrite);
+            if (handlePollError(item, fs.errnoToFileWriteError)) |err| {
+                c.setError(err);
+                return .completed;
+            }
+            if (fs.writev(data.handle, data.buffer.iovecs)) |n| {
+                c.setResult(.file_stream_write, n);
+                return .completed;
+            } else |err| switch (err) {
+                error.WouldBlock => return .requeue,
+                else => {
+                    c.setError(err);
+                    return .completed;
+                },
+            }
+        },
+        .file_stream_poll => {
+            // For poll operations, we want to know when the fd is "ready"
+            const has_error = (item.revents & net.POLL.ERR) != 0;
+            const has_hup = (item.revents & net.POLL.HUP) != 0;
+
+            if (has_error or has_hup) {
+                // Stream has error or hangup - it's "ready"
+                c.setResult(.file_stream_poll, {});
+                return .completed;
+            }
+
+            // Check if the requested events are actually ready
+            const requested_events = getEvents(c);
+            const ready_events = item.revents & requested_events;
+            if (ready_events != 0) {
+                c.setResult(.file_stream_poll, {});
                 return .completed;
             }
             // Requested events not ready yet - requeue

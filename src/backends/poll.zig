@@ -31,11 +31,7 @@ pub const NetHandle = net.fd_t;
 const BackendCapabilities = @import("../completion.zig").BackendCapabilities;
 const fs = @import("../os/fs.zig");
 
-pub const capabilities: BackendCapabilities = .{
-    .file_stream_poll = true,
-    .file_stream_read = true,
-    .file_stream_write = true,
-};
+pub const capabilities: BackendCapabilities = .{};
 
 pub const SharedState = struct {};
 

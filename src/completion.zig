@@ -21,9 +21,6 @@ pub const BackendCapabilities = struct {
     file_stat: bool = false,
     dir_open: bool = false,
     dir_close: bool = false,
-    file_stream_poll: bool = false,
-    file_stream_read: bool = false,
-    file_stream_write: bool = false,
 
     pub fn supportsNonBlockingFileIo(comptime self: BackendCapabilities) bool {
         return self.file_read or self.file_write;

@@ -61,9 +61,6 @@ pub const capabilities: BackendCapabilities = .{
     .file_stat = true,
     .dir_open = true,
     .dir_close = true,
-    .file_stream_poll = true,
-    .file_stream_read = true,
-    .file_stream_write = true,
 };
 
 pub const SharedState = struct {};

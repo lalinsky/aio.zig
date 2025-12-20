@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Loop = @import("loop.zig").Loop;
 const Timer = @import("completion.zig").Timer;
 const Async = @import("completion.zig").Async;
@@ -243,6 +244,8 @@ test "Loop: wakeFromAnywhere - cross-thread" {
 }
 
 test "FileStream: write and read" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     var loop: Loop = undefined;
     try loop.init(.{});
     defer loop.deinit();
@@ -275,6 +278,8 @@ test "FileStream: write and read" {
 }
 
 test "FileStream: poll for readability" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     var loop: Loop = undefined;
     try loop.init(.{});
     defer loop.deinit();

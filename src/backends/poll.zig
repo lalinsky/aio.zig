@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = @import("../os/posix.zig");
 const net = @import("../os/net.zig");
 const time = @import("../os/time.zig");
@@ -115,9 +116,10 @@ fn getEvents(completion: *Completion) @FieldType(net.pollfd, "events") {
                 .send => net.POLL.OUT,
             };
         },
-        .file_stream_read => net.POLL.IN,
-        .file_stream_write => net.POLL.OUT,
-        .file_stream_poll => blk: {
+        // File stream operations not supported on Windows (poll uses SOCKET, not HANDLE)
+        .file_stream_read => if (builtin.os.tag == .windows) unreachable else net.POLL.IN,
+        .file_stream_write => if (builtin.os.tag == .windows) unreachable else net.POLL.OUT,
+        .file_stream_poll => if (builtin.os.tag == .windows) unreachable else blk: {
             const poll_data = completion.cast(FileStreamPoll);
             break :blk switch (poll_data.event) {
                 .read => net.POLL.IN,
@@ -137,9 +139,9 @@ fn getPollType(op: Op) PollEntryType {
         .net_recvfrom => .send_or_recv,
         .net_sendto => .send_or_recv,
         .net_poll => .send_or_recv,
-        .file_stream_read => .send_or_recv,
-        .file_stream_write => .send_or_recv,
-        .file_stream_poll => .send_or_recv,
+        .file_stream_read => if (builtin.os.tag == .windows) unreachable else .send_or_recv,
+        .file_stream_write => if (builtin.os.tag == .windows) unreachable else .send_or_recv,
+        .file_stream_poll => if (builtin.os.tag == .windows) unreachable else .send_or_recv,
         else => unreachable,
     };
 }
@@ -234,9 +236,10 @@ fn getHandle(completion: *Completion) NetHandle {
         .net_recvfrom => completion.cast(NetRecvFrom).handle,
         .net_sendto => completion.cast(NetSendTo).handle,
         .net_poll => completion.cast(NetPoll).handle,
-        .file_stream_read => completion.cast(FileStreamRead).handle,
-        .file_stream_write => completion.cast(FileStreamWrite).handle,
-        .file_stream_poll => completion.cast(FileStreamPoll).handle,
+        // File stream handles are only compatible with NetHandle on non-Windows
+        .file_stream_read => if (builtin.os.tag == .windows) unreachable else completion.cast(FileStreamRead).handle,
+        .file_stream_write => if (builtin.os.tag == .windows) unreachable else completion.cast(FileStreamWrite).handle,
+        .file_stream_poll => if (builtin.os.tag == .windows) unreachable else completion.cast(FileStreamPoll).handle,
         else => unreachable,
     };
 }
@@ -318,16 +321,31 @@ pub fn submit(self: *Self, state: *LoopState, c: *Completion) void {
             self.addToPollQueue(state, data.handle, c);
         },
 
-        // File stream operations
+        // File stream operations (not supported on Windows - poll uses SOCKET, not HANDLE)
         .file_stream_read => {
+            if (builtin.os.tag == .windows) {
+                c.setError(error.Unexpected);
+                state.markCompleted(c);
+                return;
+            }
             const data = c.cast(FileStreamRead);
             self.addToPollQueue(state, data.handle, c);
         },
         .file_stream_write => {
+            if (builtin.os.tag == .windows) {
+                c.setError(error.Unexpected);
+                state.markCompleted(c);
+                return;
+            }
             const data = c.cast(FileStreamWrite);
             self.addToPollQueue(state, data.handle, c);
         },
         .file_stream_poll => {
+            if (builtin.os.tag == .windows) {
+                c.setError(error.Unexpected);
+                state.markCompleted(c);
+                return;
+            }
             const data = c.cast(FileStreamPoll);
             self.addToPollQueue(state, data.handle, c);
         },
@@ -551,7 +569,8 @@ pub fn checkCompletion(c: *Completion, item: *const net.pollfd) CheckResult {
             // Requested events not ready yet - requeue
             return .requeue;
         },
-        .file_stream_read => {
+        // File stream operations not supported on Windows (poll uses SOCKET, not HANDLE)
+        .file_stream_read => if (builtin.os.tag == .windows) unreachable else {
             const data = c.cast(FileStreamRead);
             if (handlePollError(item, fs.errnoToFileReadError)) |err| {
                 c.setError(err);
@@ -568,7 +587,7 @@ pub fn checkCompletion(c: *Completion, item: *const net.pollfd) CheckResult {
                 },
             }
         },
-        .file_stream_write => {
+        .file_stream_write => if (builtin.os.tag == .windows) unreachable else {
             const data = c.cast(FileStreamWrite);
             if (handlePollError(item, fs.errnoToFileWriteError)) |err| {
                 c.setError(err);
@@ -585,7 +604,7 @@ pub fn checkCompletion(c: *Completion, item: *const net.pollfd) CheckResult {
                 },
             }
         },
-        .file_stream_poll => {
+        .file_stream_poll => if (builtin.os.tag == .windows) unreachable else {
             // For poll operations, we want to know when the fd is "ready"
             const has_error = (item.revents & net.POLL.ERR) != 0;
             const has_hup = (item.revents & net.POLL.HUP) != 0;
@@ -614,8 +633,6 @@ pub fn checkCompletion(c: *Completion, item: *const net.pollfd) CheckResult {
 
 /// Async notification implementation using pipe (POSIX) or loopback socket (Windows)
 pub const Waker = struct {
-    const builtin = @import("builtin");
-
     read_fd: net.fd_t = undefined,
     write_fd: net.fd_t = undefined,
     backend: *Self,

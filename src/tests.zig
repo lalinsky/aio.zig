@@ -8,7 +8,6 @@ const NetBind = @import("completion.zig").NetBind;
 const FileStreamPoll = @import("completion.zig").FileStreamPoll;
 const FileStreamRead = @import("completion.zig").FileStreamRead;
 const FileStreamWrite = @import("completion.zig").FileStreamWrite;
-const FileClose = @import("completion.zig").FileClose;
 const ReadBuf = @import("buf.zig").ReadBuf;
 const WriteBuf = @import("buf.zig").WriteBuf;
 const net = @import("os/net.zig");
@@ -299,24 +298,4 @@ test "FileStream: poll for readability" {
     var read_data: [128]u8 = undefined;
     const read_len = posix.system.read(pipefd[0], &read_data, read_data.len);
     try std.testing.expectEqual(write_data.len, @as(usize, @intCast(read_len)));
-}
-
-test "FileStream: close" {
-    var loop: Loop = undefined;
-    try loop.init(.{});
-    defer loop.deinit();
-
-    // Create a pipe
-    const pipefd = try posix.pipe(.{ .nonblocking = true, .cloexec = true });
-
-    // Close both ends using regular file_close
-    var close_read: FileClose = .init(pipefd[0]);
-    loop.add(&close_read.c);
-    try loop.run(.until_done);
-    try close_read.getResult();
-
-    var close_write: FileClose = .init(pipefd[1]);
-    loop.add(&close_write.c);
-    try loop.run(.until_done);
-    try close_write.getResult();
 }

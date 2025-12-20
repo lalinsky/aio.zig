@@ -688,7 +688,7 @@ pub const FileClose = struct {
     } = .{},
     handle: fs.fd_t,
 
-    pub const Error = Cancelable;
+    pub const Error = fs.FileCloseError || Cancelable;
 
     pub fn init(handle: fs.fd_t) FileClose {
         return .{
